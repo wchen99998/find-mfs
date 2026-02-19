@@ -310,6 +310,28 @@ class TestScoring:
         # H2O should get the common-loss bonus
         assert score_h2o > score_random
 
+    def test_common_loss_bonus_accepts_hill_order(self, chnops_finder):
+        gen = FragmentationTreeGenerator(
+            chnops_finder,
+            loss_common_bonus=2.0,
+            loss_mass_scale=0.0,
+            loss_mass_deviation_scale=0.0,
+        )
+        # Default common losses include "NH3" and "HCOOH", but loss_formula
+        # strings are Hill-ordered ("H3N", "CH2O2").
+        score_h3n = gen._score_edge(
+            loss_formula="H3N", loss_mass=17.0, observed_delta_mz=17.0
+        )
+        score_ch2o2 = gen._score_edge(
+            loss_formula="CH2O2", loss_mass=46.0, observed_delta_mz=46.0
+        )
+        score_random = gen._score_edge(
+            loss_formula="C3H5NO2", loss_mass=17.0, observed_delta_mz=17.0
+        )
+        assert score_h3n == pytest.approx(2.0)
+        assert score_ch2o2 == pytest.approx(2.0)
+        assert score_random == pytest.approx(0.0)
+
     def test_mass_deviation_penalty(self, chnops_finder):
         gen = FragmentationTreeGenerator(
             chnops_finder,

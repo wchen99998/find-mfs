@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Sequence, Mapping, Union, TYPE_CHECKING
 
 import numpy as np
@@ -86,6 +86,18 @@ def _counts_to_formula_string(
 
 def _is_subformula(child: np.ndarray, parent: np.ndarray) -> bool:
     return bool(np.all(child <= parent))
+
+def _canonicalize_neutral_formula_string(formula_str: str) -> str:
+    """
+    Return a canonical Hill-ordered formula string for neutral formulae.
+
+    Used to match common neutral losses regardless of input ordering
+    (e.g., "NH3" -> "H3N", "SO2" -> "O2S").
+    """
+    try:
+        return Formula(formula_str).formula
+    except Exception:
+        return formula_str
 
 
 # ---------------------------------------------------------------------------
@@ -399,6 +411,11 @@ class FragmentationTreeGenerator:
             if common_losses is not None
             else self.DEFAULT_COMMON_LOSSES
         )
+        common_loss_set: set[str] = set()
+        for loss in self.common_losses:
+            common_loss_set.add(loss)
+            common_loss_set.add(_canonicalize_neutral_formula_string(loss))
+        self._common_loss_set = frozenset(common_loss_set)
 
     # ---------------------------
     # Public API
@@ -891,7 +908,7 @@ class FragmentationTreeGenerator:
         # (2) Reward common losses
         bonus = (
             self.loss_common_bonus
-            if loss_formula in self.common_losses
+            if loss_formula in self._common_loss_set
             else 0.0
         )
 
