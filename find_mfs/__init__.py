@@ -27,6 +27,16 @@ from .isotopes.envelope import (
 from .isotopes.config import SingleEnvelopeMatch, IsotopeMatchConfig
 from .isotopes.results import SingleEnvelopeMatchResult, IsotopeMatchResult
 
+# Fragmentation tree construction
+from .fragmentation.tree import (
+    FragmentationTreeGenerator,
+    FragmentationTree,
+    FragmentNode,
+    FragmentEdge,
+    IsotopeEnvelope,
+    detect_isotope_envelopes,
+)
+
 # Utility funcs
 from find_mfs.utils.filtering import (
     passes_octet_rule,
@@ -142,6 +152,14 @@ __all__ = [
     # Isotope matching results
     "SingleEnvelopeMatchResult",
     "IsotopeMatchResult",
+
+    # Fragmentation tree
+    "FragmentationTreeGenerator",
+    "FragmentationTree",
+    "FragmentNode",
+    "FragmentEdge",
+    "IsotopeEnvelope",
+    "detect_isotope_envelopes",
 
     # Utilities
     "passes_octet_rule",
