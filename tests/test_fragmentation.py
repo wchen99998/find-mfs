@@ -504,3 +504,70 @@ class TestErythromycin:
 
         assert isinstance(tree, FragmentationTree)
         assert len(tree.nodes) >= 2
+
+
+# ---------------------------------------------------------------------------
+# Real spectrum smoke test (MassBank / MoNA)
+# ---------------------------------------------------------------------------
+
+class TestNovobiocinMassBank:
+    """
+    Smoke test using a real MS/MS spectrum for novobiocin.
+
+    Source: MassBank record AU116755 (Novobiocin, LC-ESI-QTOF, CID 50 eV,
+    negative mode), accessed via MoNA.
+    Link: https://massbank.eu/MassBank/RecordDisplay.jsp?id=AU116755
+    License: CC BY
+    Copyright (C) 2016 Department of Chemistry, University of Athens
+    """
+
+    PRECURSOR_MZ = 611.2246
+    PRECURSOR_FORMULA = "[C31H35N2O11]-"  # [M-H]- for novobiocin (C31H36N2O11)
+
+    # MassBank "peak list" for AU116755 (m/z:intensity pairs).
+    # Stored inline for determinism (no network in unit tests).
+    SPECTRUM = [
+        (205.0362, 100.0),
+        (206.0422, 38.6),   # M+1 isotopologue of 205.0362 fragment
+        (232.0221, 17.4),
+        (380.1298, 19.4),
+    ]
+
+    # Tight precursor constraints to keep the test stable and ensure the
+    # correct root formula is selected before the tree ILP solve.
+    PRECURSOR_COUNTS = {"C": 31, "H": 35, "N": 2, "O": 11, "P": 0, "S": 0}
+    MAX_COUNTS = {"C": 31, "H": 36, "N": 2, "O": 11, "P": 0, "S": 0}
+
+    def test_detect_isotope_envelopes_real_spectrum(self):
+        envs = detect_isotope_envelopes(self.SPECTRUM, charge=-1)
+        # Expect the 205/206 pair to be grouped into an envelope.
+        assert any(
+            env.monoisotopic_mz == pytest.approx(205.0362, abs=0.01)
+            and env.peaks.shape[0] == 2
+            for env in envs
+        )
+
+    def test_generate_tree_from_real_spectrum(self, chnops_finder):
+        gen = FragmentationTreeGenerator(
+            chnops_finder,
+            error_ppm=20.0,
+            max_candidates_per_peak=5,
+            max_results_per_peak=2000,
+        )
+
+        tree = gen.generate(
+            precursor_mz=self.PRECURSOR_MZ,
+            spectrum=self.SPECTRUM,
+            charge=-1,
+            adduct=None,
+            top_n_precursor_formulas=1,
+            min_counts=self.PRECURSOR_COUNTS,
+            max_counts=self.MAX_COUNTS,
+            auto_detect_envelopes=True,
+        )
+
+        assert isinstance(tree, FragmentationTree)
+        root = [n for n in tree.nodes if n.idx == tree.root_idx][0]
+        assert root.formula.formula == self.PRECURSOR_FORMULA
+        assert len(tree.nodes) > 1
+        assert len(tree.edges) >= 1
