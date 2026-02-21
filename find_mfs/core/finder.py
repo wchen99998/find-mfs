@@ -125,6 +125,27 @@ class FormulaFinder:
         else:
             self._rdbe_coeffs = None
 
+        # Isotope pre-filter coefficients (M+1/M+2 approximation)
+        from ..isotopes._isospec_bridge import M1_RATIOS, M2_DIRECT
+        self._iso_m1_coeffs = np.array(
+            [M1_RATIOS.get(s, 0.0) for s in self._symbols],
+            dtype=np.float64,
+        )
+        self._iso_m2_direct_coeffs = np.array(
+            [M2_DIRECT.get(s, 0.0) for s in self._symbols],
+            dtype=np.float64,
+        )
+
+        # Lazily cached isotope arrays for batch scoring
+        self._iso_arrays_cache = None
+
+    def _get_iso_arrays(self):
+        """Get cached isotope arrays for the element set."""
+        if self._iso_arrays_cache is None:
+            from ..isotopes._isospec_bridge import get_isotope_arrays
+            self._iso_arrays_cache = get_isotope_arrays(self._symbols)
+        return self._iso_arrays_cache
+
     @staticmethod
     def _parse_adduct(
         adduct_str: str
@@ -365,6 +386,34 @@ class FormulaFinder:
                 'charge_parity_even': core_charge_parity_even,
             }
 
+        # Isotope pre-filter: extract M+1/M+2 ratios from observed envelope
+        if (
+            isotope_match is not None
+            and isotope_match.enable_approx_prefilter
+            and self._iso_m1_coeffs is not None
+        ):
+            obs_env = isotope_match.envelope
+            base_idx = np.argmax(obs_env[:, 1])
+            base_mz = obs_env[base_idx, 0]
+
+            # Find M+1 peak (delta 0.9–1.1 Da from base)
+            obs_m1_ratio = 0.0
+            obs_m2_ratio = 0.0
+            for i in range(obs_env.shape[0]):
+                delta = obs_env[i, 0] - base_mz
+                if 0.9 <= delta <= 1.1:
+                    obs_m1_ratio = obs_env[i, 1] / obs_env[base_idx, 1]
+                elif 1.9 <= delta <= 2.1:
+                    obs_m2_ratio = obs_env[i, 1] / obs_env[base_idx, 1]
+
+            if obs_m1_ratio > 0.0:
+                decompose_kwargs['iso_m1_coeffs'] = self._iso_m1_coeffs
+                decompose_kwargs['iso_m2_direct_coeffs'] = self._iso_m2_direct_coeffs
+                decompose_kwargs['obs_m1_ratio'] = obs_m1_ratio
+                decompose_kwargs['obs_m2_ratio'] = obs_m2_ratio
+                decompose_kwargs['iso_tol_rel'] = isotope_match.approx_tolerance_rel
+                decompose_kwargs['iso_tol_abs'] = isotope_match.approx_tolerance_abs
+
         # Get raw element count vectors (avoids Formula construction)
         counts, symbols = self.decomposer.decompose_to_counts(
             query_mass=adjusted_mass,
@@ -438,7 +487,38 @@ class FormulaFinder:
 
         # No-adduct path: formula IS the ion (with its charge and mass).
         if adduct_formula is None:
+            # Use fast isotope path when only isotope matching remains
+            use_fast_iso = (
+                isotope_match is not None
+                and remaining_filter_rdbe is None
+                and not remaining_check_octet
+            )
+
+            # Batch isotope scoring: score all candidates in one Numba call
+            if use_fast_iso and n_rows > 0:
+                from ..isotopes.envelope import score_isotope_batch
+                from ..isotopes.results import SingleEnvelopeMatchResult
+                # Compute mz tolerance: use query mass for ppm→Da conversion
+                # (all candidates are within ppm tolerance of query mass)
+                ppm_to_da = 1e-6 * isotope_match.mz_tolerance_ppm * mass
+                mz_tol = max(isotope_match.mz_tolerance_da, ppm_to_da)
+                batch_counts = counts[sort_order]  # already int32 2D
+                iso_rmse, iso_mf, iso_nm = score_isotope_batch(
+                    symbols=symbols,
+                    counts_2d=batch_counts,
+                    charge=charge,
+                    observed_envelope=isotope_match.envelope,
+                    mz_match_tolerance=mz_tol,
+                    simulated_mz_tolerance=isotope_match.simulated_mz_tolerance,
+                    simulated_intensity_threshold=isotope_match.simulated_intensity_threshold,
+                )
+                iso_passes = iso_rmse <= isotope_match.minimum_rmse
+                n_obs = isotope_match.envelope.shape[0]
+
             for idx in range(n_rows):
+                if use_fast_iso and not iso_passes[idx]:
+                    continue
+
                 row_list = sorted_counts_list[idx]
 
                 formula = LightFormula.from_counts(
@@ -449,7 +529,16 @@ class FormulaFinder:
                 )
 
                 isotope_result = None
-                if needs_validation:
+                if use_fast_iso:
+                    isotope_result = SingleEnvelopeMatchResult(
+                        num_peaks_matched=int(iso_nm[idx]),
+                        num_peaks_total=n_obs,
+                        intensity_rmse=float(iso_rmse[idx]),
+                        match_fraction=float(iso_mf[idx]),
+                        peak_matches=np.full(n_obs, iso_nm[idx] > 0),
+                        predicted_envelope=np.empty((0, 2), dtype=np.float64),
+                    )
+                elif needs_validation:
                     passes, isotope_result = self.validator.validate(
                         formula=formula,
                         filter_rdbe=remaining_filter_rdbe,
@@ -483,63 +572,138 @@ class FormulaFinder:
                 if item.count > 0:
                     adduct_elements[sym] = item.count
 
-            for idx in range(n_rows):
-                row_list = sorted_counts_list[idx]
+            # Batch isotope scoring for adduct path:
+            # First pass: collect RDBE-valid indices, then batch-score.
+            if isotope_match is not None and n_rows > 0:
+                from ..isotopes.envelope import score_isotope_batch
+                from ..isotopes.results import SingleEnvelopeMatchResult
 
-                # Core molecule: neutral, no adduct elements
-                formula = LightFormula.from_counts(
-                    symbols=symbols,
-                    counts=row_list,
-                    charge=0,
-                    monoisotopic_mass=(
-                        sorted_masses[idx] + charge_mass_offset - adduct_mono_mass
-                    ),
-                )
+                # Determine merged element set: decomposer symbols + adduct-only symbols
+                adduct_only_symbols = [s for s in adduct_elements if s not in symbols]
+                ion_symbols = list(symbols) + adduct_only_symbols
 
-                # Validate RDBE/octet on the core formula, but isotope
-                # matching needs the full ion (core + adduct).
-                isotope_result = None
-                if needs_validation:
-                    passes, _ = self.validator.validate(
-                        formula=formula,
-                        filter_rdbe=remaining_filter_rdbe,
-                        check_octet=remaining_check_octet,
-                    )
-                    if not passes:
-                        continue
+                # Adduct offset counts for the merged element set
+                adduct_offsets = []
+                for s in ion_symbols:
+                    adduct_offsets.append(adduct_elements.get(s, 0))
+                adduct_offsets_arr = np.array(adduct_offsets, dtype=np.int32)
 
-                    if isotope_match is not None:
-                        # Build ion formula for isotope matching.
-                        # TODO: refactor isotope API to accept a formula
-                        #  string + charge directly
-                        ion_dict: dict[str, int] = {}
-                        for sym, count in formula._iter_nonzero_items():
-                            ion_dict[sym] = count
-                        for sym, cnt in adduct_elements.items():
-                            ion_dict[sym] = ion_dict.get(sym, 0) + cnt
-
-                        ion_formula = LightFormula(
-                            elements=ion_dict,
-                            charge=charge,
-                            monoisotopic_mass=sorted_masses[idx],
+                # First pass: collect indices that pass RDBE/octet validation
+                rdbe_valid_indices = []
+                for idx in range(n_rows):
+                    if remaining_filter_rdbe is not None or remaining_check_octet:
+                        row_list = sorted_counts_list[idx]
+                        formula = LightFormula.from_counts(
+                            symbols=symbols,
+                            counts=row_list,
+                            charge=0,
+                            monoisotopic_mass=(
+                                sorted_masses[idx] + charge_mass_offset - adduct_mono_mass
+                            ),
                         )
-                        passes, isotope_result = self.validator.validate(
-                            formula=ion_formula,
-                            isotope_match_config=isotope_match,
+                        passes, _ = self.validator.validate(
+                            formula=formula,
+                            filter_rdbe=remaining_filter_rdbe,
+                            check_octet=remaining_check_octet,
+                        )
+                        if not passes:
+                            continue
+                    rdbe_valid_indices.append(idx)
+
+                # Build ion_counts_2d for RDBE-valid candidates
+                if rdbe_valid_indices:
+                    n_valid = len(rdbe_valid_indices)
+                    n_ion_elements = len(ion_symbols)
+                    ion_counts_2d = np.empty((n_valid, n_ion_elements), dtype=np.int32)
+                    sorted_counts_arr = counts[sort_order]
+                    n_core = len(symbols)
+                    for bi, idx in enumerate(rdbe_valid_indices):
+                        # Core element counts
+                        ion_counts_2d[bi, :n_core] = sorted_counts_arr[idx]
+                        # Adduct-only element counts (zeros from core)
+                        for j in range(n_core, n_ion_elements):
+                            ion_counts_2d[bi, j] = 0
+                        # Add adduct offsets
+                        ion_counts_2d[bi] += adduct_offsets_arr
+
+                    ppm_to_da = 1e-6 * isotope_match.mz_tolerance_ppm * mass
+                    mz_tol = max(isotope_match.mz_tolerance_da, ppm_to_da)
+                    iso_rmse, iso_mf, iso_nm = score_isotope_batch(
+                        symbols=ion_symbols,
+                        counts_2d=ion_counts_2d,
+                        charge=charge,
+                        observed_envelope=isotope_match.envelope,
+                        mz_match_tolerance=mz_tol,
+                        simulated_mz_tolerance=isotope_match.simulated_mz_tolerance,
+                        simulated_intensity_threshold=isotope_match.simulated_intensity_threshold,
+                    )
+                    iso_passes = iso_rmse <= isotope_match.minimum_rmse
+                    n_obs = isotope_match.envelope.shape[0]
+
+                    # Second pass: build candidates from valid+passing
+                    for bi, idx in enumerate(rdbe_valid_indices):
+                        if not iso_passes[bi]:
+                            continue
+                        row_list = sorted_counts_list[idx]
+                        formula = LightFormula.from_counts(
+                            symbols=symbols,
+                            counts=row_list,
+                            charge=0,
+                            monoisotopic_mass=(
+                                sorted_masses[idx] + charge_mass_offset - adduct_mono_mass
+                            ),
+                        )
+                        isotope_result = SingleEnvelopeMatchResult(
+                            num_peaks_matched=int(iso_nm[bi]),
+                            num_peaks_total=n_obs,
+                            intensity_rmse=float(iso_rmse[bi]),
+                            match_fraction=float(iso_mf[bi]),
+                            peak_matches=np.full(n_obs, iso_nm[bi] > 0),
+                            predicted_envelope=np.empty((0, 2), dtype=np.float64),
+                        )
+                        append_candidate(
+                            FormulaCandidate(
+                                formula=formula,
+                                error_ppm=sorted_err_ppm[idx],
+                                error_da=sorted_masses[idx] - mass,
+                                rdbe=sorted_rdbes[idx] if sorted_rdbes is not None else None,
+                                adduct=adduct,
+                                isotope_match_result=isotope_result,
+                            )
+                        )
+            else:
+                # No isotope matching — original loop with RDBE/octet only
+                for idx in range(n_rows):
+                    row_list = sorted_counts_list[idx]
+
+                    # Core molecule: neutral, no adduct elements
+                    formula = LightFormula.from_counts(
+                        symbols=symbols,
+                        counts=row_list,
+                        charge=0,
+                        monoisotopic_mass=(
+                            sorted_masses[idx] + charge_mass_offset - adduct_mono_mass
+                        ),
+                    )
+
+                    if needs_validation:
+                        passes, _ = self.validator.validate(
+                            formula=formula,
+                            filter_rdbe=remaining_filter_rdbe,
+                            check_octet=remaining_check_octet,
                         )
                         if not passes:
                             continue
 
-                append_candidate(
-                    FormulaCandidate(
-                        formula=formula,
-                        error_ppm=sorted_err_ppm[idx],
-                        error_da=sorted_masses[idx] - mass,
-                        rdbe=sorted_rdbes[idx] if sorted_rdbes is not None else None,
-                        adduct=adduct,
-                        isotope_match_result=isotope_result,
+                    append_candidate(
+                        FormulaCandidate(
+                            formula=formula,
+                            error_ppm=sorted_err_ppm[idx],
+                            error_da=sorted_masses[idx] - mass,
+                            rdbe=sorted_rdbes[idx] if sorted_rdbes is not None else None,
+                            adduct=adduct,
+                        )
                     )
-                )
 
         # Store query parameters for reference
         query_params = {

@@ -355,6 +355,12 @@ class MassDecomposer:
         rdbe_max: float = np.inf,
         check_octet: bool = False,
         charge_parity_even: Optional[bool] = None,
+        iso_m1_coeffs: Optional[np.ndarray] = None,
+        iso_m2_direct_coeffs: Optional[np.ndarray] = None,
+        obs_m1_ratio: float = 0.0,
+        obs_m2_ratio: float = 0.0,
+        iso_tol_rel: float = 0.3,
+        iso_tol_abs: float = 0.02,
     ) -> tuple[np.ndarray, list[str]]:
         """
         Decompose a mass into element count vectors using the consolidated
@@ -443,6 +449,22 @@ class MassDecomposer:
         else:
             rdbe_coeffs_arr = np.ascontiguousarray(rdbe_coeffs, dtype=np.float64)
 
+        # Prepare isotope pre-filter parameters for Numba.
+        # When iso_m1_coeffs is None, we pass np.zeros(n_elem) so that the
+        # fused inner loop in _decompose_mass_range can unconditionally
+        # accumulate `approx_m1 += val_f * iso_m1_coeffs[j]` without a
+        # per-iteration branch. Multiplying by zero is cheaper than a
+        # branch for the 6-element CHNOPS loop, and avoids the out-of-bounds
+        # access that would occur with the default np.empty(0) parameter.
+        do_iso_filter = iso_m1_coeffs is not None
+        n_elem = len(self.elements)
+        if iso_m1_coeffs is None:
+            iso_m1_arr = np.zeros(n_elem, dtype=np.float64)
+            iso_m2_arr = np.zeros(n_elem, dtype=np.float64)
+        else:
+            iso_m1_arr = np.ascontiguousarray(iso_m1_coeffs, dtype=np.float64)
+            iso_m2_arr = np.ascontiguousarray(iso_m2_direct_coeffs, dtype=np.float64)
+
         counts = _decompose_mass_range(
             ERT=self.ERT,
             integer_masses=integer_masses,
@@ -461,6 +483,13 @@ class MassDecomposer:
             check_octet=check_octet,
             charge_parity_even=charge_parity_even,
             do_rdbe_filter=do_rdbe_filter,
+            do_iso_filter=do_iso_filter,
+            iso_m1_coeffs=iso_m1_arr,
+            iso_m2_direct=iso_m2_arr,
+            obs_m1_ratio=obs_m1_ratio,
+            obs_m2_ratio=obs_m2_ratio,
+            iso_tol_rel=iso_tol_rel,
+            iso_tol_abs=iso_tol_abs,
         )
 
         return counts, list(self.element_symbols)

@@ -58,6 +58,13 @@ def _decompose_mass_range(
         check_octet: bool,
         charge_parity_even: bool,
         do_rdbe_filter: bool,
+        do_iso_filter: bool = False,
+        iso_m1_coeffs: np.ndarray = np.empty(0, dtype=np.float64),
+        iso_m2_direct: np.ndarray = np.empty(0, dtype=np.float64),
+        obs_m1_ratio: float = 0.0,
+        obs_m2_ratio: float = 0.0,
+        iso_tol_rel: float = 0.3,
+        iso_tol_abs: float = 0.02,
 ) -> np.ndarray:
     """
     Consolidated decomposition across an integer mass range.
@@ -75,6 +82,10 @@ def _decompose_mass_range(
     When do_rdbe_filter is True, applies RDBE range and octet rule checks
     at the leaf level, avoiding writing filtered-out candidates to the
     result array entirely.
+
+    When do_iso_filter is True, applies approximate M+1/M+2 isotope ratio
+    checks at the leaf level, eliminating candidates with incompatible
+    isotope patterns before they reach the full IsoSpecPy scoring.
 
     Returns:
         2D int32 array of shape (N, num_elements) with valid counts
@@ -127,19 +138,22 @@ def _decompose_mass_range(
 
                     # Check bounds for element 0
                     if c[0] <= bounds[0]:
-                        # Compute exact mass and RDBE with min_values applied
-                        # in a single fused loop. RDBE is always computed
-                        # (branch-free inner loop); when not filtering,
-                        # zero coeffs and -inf/+inf bounds make it a no-op.
+                        # Compute exact mass, RDBE, and M+1 approximation
+                        # with min_values applied in a single fused loop.
+                        # RDBE and M+1 are always computed (branch-free
+                        # inner loop); when not filtering, zero coeffs and
+                        # -inf/+inf bounds make them no-ops.
                         total = np.int64(0)
                         exact_mass = -charge_mass_offset
                         rdbe = 1.0
+                        approx_m1 = 0.0
                         for j in range(num_elements):
                             val = c[j] + min_values[j]
                             val_f = np.float64(val)
                             total += val
                             exact_mass += val_f * real_masses[j]
                             rdbe += val_f * rdbe_coeffs[j]
+                            approx_m1 += val_f * iso_m1_coeffs[j]
 
                         if total > 0 and original_min_mass <= exact_mass <= original_max_mass:
                             mass_valid_count += 1
@@ -157,6 +171,25 @@ def _decompose_mass_range(
                                     if charge_parity_even and is_half_int:
                                         store = False
                                     elif not charge_parity_even and not is_half_int:
+                                        store = False
+
+                            # Optional isotope pre-filter at the leaf
+                            if store and do_iso_filter:
+                                tol = iso_tol_rel * obs_m1_ratio
+                                if tol < iso_tol_abs:
+                                    tol = iso_tol_abs
+                                if abs(approx_m1 - obs_m1_ratio) > tol:
+                                    store = False
+                                elif obs_m2_ratio > 0.0:
+                                    approx_m2 = approx_m1 * approx_m1 * 0.5
+                                    for j in range(num_elements):
+                                        approx_m2 += np.float64(
+                                            c[j] + min_values[j]
+                                        ) * iso_m2_direct[j]
+                                    tol2 = iso_tol_rel * obs_m2_ratio
+                                    if tol2 < iso_tol_abs:
+                                        tol2 = iso_tol_abs
+                                    if abs(approx_m2 - obs_m2_ratio) > tol2:
                                         store = False
 
                             if store:
