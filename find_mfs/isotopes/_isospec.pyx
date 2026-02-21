@@ -8,6 +8,8 @@ cimport numpy as np
 from libc.math cimport fabs, sqrt
 from libc.stdlib cimport malloc, free
 from libc.stdint cimport int32_t
+from libc.string cimport memcpy
+from cython.parallel cimport prange
 from posix.dlfcn cimport dlopen, dlsym, dlclose, dlerror, RTLD_LAZY
 
 ctypedef double float64_t
@@ -33,6 +35,9 @@ cdef deleteIso_t _deleteIso = NULL
 cdef freeReleasedArray_t _freeArray = NULL
 cdef void* _lib_handle = NULL
 cdef bint _loaded = False
+
+# Module-level cache for isotope arrays keyed by symbol tuple
+_iso_array_cache = {}
 
 
 def _load_isospec_lib():
@@ -254,6 +259,74 @@ cdef (double, double, int) _score_single_envelope(
     return (rmse, match_frac, n_matched)
 
 
+cdef (double, double, int) _score_candidate_zeroskip(
+    int32_t* iso_numbers_ptr, double* flat_masses_ptr, double* flat_probs_ptr,
+    int* iso_offsets, int n_elements,
+    int32_t* candidate_counts,
+    double* obs_mz_ptr, double* obs_int_ptr, int n_obs,
+    double combine_tol, double match_tol, double threshold,
+    int charge, double electron_mass,
+) noexcept nogil:
+    """Score a single candidate, skipping zero-count elements."""
+    cdef int j, k, n_active, n_iso, offset
+    cdef int32_t* active_iso_numbers
+    cdef int32_t* active_counts
+    cdef double* active_masses
+    cdef double* active_probs
+    cdef double r, mf
+    cdef int nm
+
+    # Count non-zero elements
+    n_active = 0
+    for j in range(n_elements):
+        if candidate_counts[j] > 0:
+            n_active += 1
+
+    if n_active == 0:
+        return (1.0, 0.0, 0)
+
+    # Build compressed arrays with only non-zero elements
+    active_iso_numbers = <int32_t*>malloc(n_active * sizeof(int32_t))
+    active_counts = <int32_t*>malloc(n_active * sizeof(int32_t))
+
+    k = 0
+    n_iso = 0
+    for j in range(n_elements):
+        if candidate_counts[j] > 0:
+            active_iso_numbers[k] = iso_numbers_ptr[j]
+            active_counts[k] = candidate_counts[j]
+            n_iso += iso_numbers_ptr[j]
+            k += 1
+
+    active_masses = <double*>malloc(n_iso * sizeof(double))
+    active_probs = <double*>malloc(n_iso * sizeof(double))
+
+    # Copy flat mass/prob data for active elements using precomputed offsets
+    offset = 0
+    for j in range(n_elements):
+        if candidate_counts[j] > 0:
+            memcpy(&active_masses[offset], &flat_masses_ptr[iso_offsets[j]],
+                   iso_numbers_ptr[j] * sizeof(double))
+            memcpy(&active_probs[offset], &flat_probs_ptr[iso_offsets[j]],
+                   iso_numbers_ptr[j] * sizeof(double))
+            offset += iso_numbers_ptr[j]
+
+    r, mf, nm = _score_single_envelope(
+        active_iso_numbers, active_counts,
+        active_masses, active_probs, n_active,
+        obs_mz_ptr, obs_int_ptr, n_obs,
+        combine_tol, match_tol, threshold,
+        charge, electron_mass,
+    )
+
+    free(active_iso_numbers)
+    free(active_counts)
+    free(active_masses)
+    free(active_probs)
+
+    return (r, mf, nm)
+
+
 def score_isotope_batch(
     list symbols,
     np.ndarray counts_2d,
@@ -266,7 +339,8 @@ def score_isotope_batch(
     """
     Batch isotope envelope scoring for multiple candidates.
 
-    Drop-in replacement for the Numba-based score_isotope_batch.
+    Uses OpenMP prange for parallel scoring and skips zero-count elements
+    to reduce IsoSpec setup overhead.
 
     Args:
         symbols: Element symbols (e.g., ['C', 'H', 'N', 'O', 'P', 'S'])
@@ -282,14 +356,20 @@ def score_isotope_batch(
     """
     _load_isospec_lib()
 
-    from ._isospec_bridge import get_isotope_arrays
     from molmass.elements import ELECTRON
 
     cdef int n_elements = len(symbols)
     counts_2d = np.ascontiguousarray(counts_2d, dtype=np.int32)
     cdef int n_candidates = counts_2d.shape[0]
 
-    iso_numbers_np, flat_masses_np, flat_probs_np = get_isotope_arrays(symbols)
+    # Cache isotope arrays keyed by symbol tuple
+    sym_key = tuple(symbols)
+    if sym_key in _iso_array_cache:
+        iso_numbers_np, flat_masses_np, flat_probs_np = _iso_array_cache[sym_key]
+    else:
+        from ._isospec_bridge import get_isotope_arrays
+        iso_numbers_np, flat_masses_np, flat_probs_np = get_isotope_arrays(symbols)
+        _iso_array_cache[sym_key] = (iso_numbers_np, flat_masses_np, flat_probs_np)
 
     cdef np.ndarray iso_numbers = np.ascontiguousarray(iso_numbers_np, dtype=np.int32)
     cdef np.ndarray flat_masses = np.ascontiguousarray(flat_masses_np, dtype=np.float64)
@@ -306,9 +386,6 @@ def score_isotope_batch(
     cdef np.ndarray mf_out = np.empty(n_candidates, dtype=np.float64)
     cdef np.ndarray nm_out = np.empty(n_candidates, dtype=np.int32)
 
-    # Temporary atom_counts array
-    cdef np.ndarray atom_counts = np.empty(n_elements, dtype=np.int32)
-
     cdef int i, j
     cdef double r, mf
     cdef int nm
@@ -319,21 +396,34 @@ def score_isotope_batch(
     cdef double[::1] flat_probs_view = flat_probs
     cdef double[::1] obs_mz_view = obs_mz
     cdef double[::1] obs_int_view = obs_int
-    cdef int32_t[::1] atom_counts_view = atom_counts
     cdef int32_t[:, ::1] counts_view = counts_2d
     cdef double[::1] rmse_out_view = rmse_out
     cdef double[::1] mf_out_view = mf_out
     cdef int32_t[::1] nm_out_view = nm_out
 
-    with nogil:
-        for i in range(n_candidates):
-            for j in range(n_elements):
-                atom_counts_view[j] = counts_view[i, j]
+    # Pre-compute cumulative offsets into flat isotope arrays for zero-skip
+    cdef int* iso_offsets = <int*>malloc((n_elements + 1) * sizeof(int))
+    if iso_offsets == NULL:
+        raise MemoryError("Failed to allocate iso_offsets")
+    iso_offsets[0] = 0
+    for j in range(n_elements):
+        iso_offsets[j + 1] = iso_offsets[j] + iso_numbers_view[j]
+    cdef int total_isotopes = iso_offsets[n_elements]
 
-            r, mf, nm = _score_single_envelope(
-                &iso_numbers_view[0], &atom_counts_view[0],
-                &flat_masses_view[0], &flat_probs_view[0], n_elements,
-                &obs_mz_view[0], &obs_int_view[0], n_obs,
+    # Pointers to flat arrays for nogil access
+    cdef int32_t* iso_numbers_ptr = &iso_numbers_view[0]
+    cdef double* flat_masses_ptr = &flat_masses_view[0]
+    cdef double* flat_probs_ptr = &flat_probs_view[0]
+    cdef double* obs_mz_ptr = &obs_mz_view[0]
+    cdef double* obs_int_ptr = &obs_int_view[0]
+
+    with nogil:
+        for i in prange(n_candidates, schedule='dynamic', chunksize=4):
+            r, mf, nm = _score_candidate_zeroskip(
+                iso_numbers_ptr, flat_masses_ptr, flat_probs_ptr,
+                iso_offsets, n_elements,
+                &counts_view[i, 0],
+                obs_mz_ptr, obs_int_ptr, n_obs,
                 simulated_mz_tolerance, mz_match_tolerance,
                 simulated_intensity_threshold,
                 charge, electron_mass,
@@ -342,6 +432,7 @@ def score_isotope_batch(
             mf_out_view[i] = mf
             nm_out_view[i] = nm
 
+    free(iso_offsets)
     return rmse_out, mf_out, nm_out
 
 

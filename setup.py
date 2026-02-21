@@ -33,7 +33,8 @@ extensions = [
         "find_mfs.isotopes._isospec",
         sources=["find_mfs/isotopes/_isospec.pyx"],
         include_dirs=[np.get_include()],
-        extra_compile_args=compile_args,
+        extra_compile_args=compile_args + ["-fopenmp"],
+        extra_link_args=["-fopenmp"],
     ),
 ]
 
