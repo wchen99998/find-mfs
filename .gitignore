@@ -172,3 +172,13 @@ cython_debug/
 
 
 .serena/
+
+# Cython generated C/C++ files
+*.c
+*.cpp
+
+# Compiled modules (extension modules)
+*.so
+*.pyd
+# Cython debug/annotation files
+*.html

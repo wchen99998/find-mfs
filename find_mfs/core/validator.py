@@ -144,7 +144,7 @@ class FormulaValidator:
         isotope_match_config: 'IsotopeMatchConfig',
     ) -> tuple[bool, Optional['IsotopeMatchResult']]:
         """
-        Fast isotope validation using Numba + C++ IsoSpecPy path.
+        Fast isotope validation using Cython + C++ IsoSpecPy path.
 
         Bypasses string-based Formula construction for ~30x speedup.
 

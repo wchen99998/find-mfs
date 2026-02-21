@@ -15,8 +15,6 @@ from typing import TYPE_CHECKING
 import numpy as np
 from molmass import Formula
 from molmass.elements import ELECTRON
-from numba import njit, types as nbtypes
-from numba.core.runtime import nrt
 
 try:
     import IsoSpecPy as iso
@@ -98,9 +96,9 @@ def get_isotope_envelope(
         )
 
     # Note: float32 is used here for the old match_isotope_envelope() path.
-    # The fast path (match_isotope_envelope_fast) uses float64 throughout
-    # via IsoSpecPy's C++ doubles. This causes small RMSE differences
-    # (<0.01 absolute) between paths, which is acceptable.
+    # The fast path uses float64 throughout via IsoSpecPy's C++ doubles.
+    # This causes small RMSE differences (<0.01 absolute) between paths,
+    # which is acceptable.
     isologues: np.ndarray = np.array(
         isologues,
         dtype=np.float32,
@@ -224,26 +222,14 @@ def match_isotope_envelope(
             predicted/observed isotopologue signal m/z value to be considered
             a match.
 
-            This parameter should depend on the instrument's mass accuracy,
-            and should be set very generously.
-
         simulated_envelope_mz_tolerance: The resolution at which isotope
-            envelopes will be simulated. Isotopologues less resolved than
-            this value will be combined (i.e. intensities summed, m/z values
-            weighted average). Default: 0.05
+            envelopes will be simulated. Default: 0.05
 
         simulated_envelope_intsy_threshold: The minimum relative intensity
             to be included in a simulated isotope envelope. Default: 0.001
 
     Returns:
-        SingleEnvelopeMatchResult containing:
-        - intensity_rmse: Root-mean-square error of matched intensity
-            differences (excluding base peak). Lower is better.
-        - match_fraction: Fraction of observed peaks matched to a predicted
-            peak (for filtering)
-        - peak_matches: Boolean array of which observed peaks matched
-        - num_peaks_matched/total: Count information
-        - predicted_envelope: The theoretical envelope used
+        SingleEnvelopeMatchResult containing RMSE, match fraction, etc.
     """
     _check_isospec_available()
 
@@ -275,8 +261,6 @@ def match_isotope_envelope(
             peak_matches[idx] = True
 
     # Compute RMSE of intensity differences, excluding the base peak
-    # (tallest signal). Both envelopes are normalized so the base peak
-    # is always 1.0, meaning it carries no discriminating information.
     base_peak_idx = np.argmax(observed_intensities)
     mask = np.ones(num_observed, dtype=bool)
     mask[base_peak_idx] = False
@@ -308,262 +292,8 @@ def match_isotope_envelope(
 
 
 # ---------------------------------------------------------------------------
-# Fast path: Numba + C++ IsoSpecPy scoring
+# Fast path: Cython + C++ IsoSpecPy scoring (replaces Numba path)
 # ---------------------------------------------------------------------------
-
-# Module-level ctypes references; initialized lazily on first use.
-_fast_path_ready = False
-_setupIso = None
-_setupThreshold = None
-_confs_no = None
-_getMasses = None
-_getProbs = None
-_deleteFE = None
-_deleteIso = None
-_freeArray = None
-
-
-def _ensure_fast_path():
-    """Lazily load ctypes function references for the fast path."""
-    global _fast_path_ready
-    global _setupIso, _setupThreshold, _confs_no
-    global _getMasses, _getProbs, _deleteFE, _deleteIso, _freeArray
-
-    if _fast_path_ready:
-        return
-    from ._isospec_bridge import get_lib_functions
-    (
-        _setupIso, _setupThreshold, _confs_no,
-        _getMasses, _getProbs, _deleteFE, _deleteIso, _freeArray,
-    ) = get_lib_functions()
-    _fast_path_ready = True
-
-
-def _make_isospec_match_and_score():
-    """
-    Build and return the @njit scoring function with ctypes globals bound.
-
-    We use a factory so that the ctypes function references are captured
-    as closure variables at definition time, making them accessible to
-    Numba's type inference.
-    """
-    _ensure_fast_path()
-
-    # Bind to local names so Numba can resolve them as globals of the
-    # inner function's module.
-    setupIso = _setupIso
-    setupThreshold = _setupThreshold
-    confs_no = _confs_no
-    getMasses = _getMasses
-    getProbs = _getProbs
-    deleteFE = _deleteFE
-    deleteIso = _deleteIso
-    freeArray = _freeArray
-
-    from ._isospec_bridge import uint64_to_voidptr
-    from numba import carray
-
-    @njit
-    def _isospec_match_and_score(
-        iso_numbers, atom_counts, flat_masses, flat_probs, n_elements,
-        obs_mz, obs_int, combine_tol, match_tol, threshold,
-        charge, electron_mass,
-    ):
-        """
-        Full IsoSpecPy C++ call + combine + match + RMSE in Numba.
-
-        Args:
-            iso_numbers: int32[n_elements] - isotope count per element
-            atom_counts: int32[n_elements] - atom count per element
-            flat_masses: float64[sum(iso_numbers)] - concatenated isotope masses
-            flat_probs: float64[sum(iso_numbers)] - concatenated isotope probs
-            n_elements: int - number of elements
-            obs_mz: float64[n_obs] - observed m/z values (normalized)
-            obs_int: float64[n_obs] - observed intensities (normalized to 1.0)
-            combine_tol: float - tolerance for combining unresolved peaks
-            match_tol: float - tolerance for matching observed to predicted
-            threshold: float - IsoSpecPy intensity threshold
-            charge: int - ion charge state
-            electron_mass: float - electron mass for m/z adjustment
-
-        Returns:
-            Tuple of (rmse, match_fraction, n_matched)
-        """
-        # 1. Call C++ setupIso
-        iso_ptr = setupIso(
-            n_elements,
-            iso_numbers.ctypes,
-            atom_counts.ctypes,
-            flat_masses.ctypes,
-            flat_probs.ctypes,
-        )
-
-        # 2. Get threshold fixed envelope
-        env_ptr = setupThreshold(iso_ptr, threshold, False, False)
-        n_peaks = confs_no(env_ptr)
-
-        if n_peaks == 0:
-            deleteFE(env_ptr, False)
-            deleteIso(iso_ptr)
-            return 1.0, 0.0, 0
-
-        # 3. Read mass/prob arrays (zero-copy via carray)
-        masses_raw = getMasses(env_ptr)
-        probs_raw = getProbs(env_ptr)
-        pred_mz_raw = carray(
-            uint64_to_voidptr(masses_raw),
-            (n_peaks,),
-            dtype=nbtypes.float64,
-        )
-        pred_prob_raw = carray(
-            uint64_to_voidptr(probs_raw),
-            (n_peaks,),
-            dtype=nbtypes.float64,
-        )
-
-        # Copy to local arrays (C++ memory will be freed)
-        pred_mz = np.empty(n_peaks, dtype=np.float64)
-        pred_prob = np.empty(n_peaks, dtype=np.float64)
-        for i in range(n_peaks):
-            pred_mz[i] = pred_mz_raw[i]
-            pred_prob[i] = pred_prob_raw[i]
-
-        # 4. Free C++ memory
-        freeArray(masses_raw)
-        freeArray(probs_raw)
-        deleteFE(env_ptr, False)
-        deleteIso(iso_ptr)
-
-        # 5. Adjust for charge (convert neutral mass to m/z)
-        if charge != 0:
-            abs_charge = abs(charge)
-            charge_offset = charge * electron_mass
-            for i in range(n_peaks):
-                pred_mz[i] = (pred_mz[i] + charge_offset) / abs_charge
-
-        # 6. Insertion sort by mass
-        order = np.arange(n_peaks, dtype=np.int64)
-        for i in range(1, n_peaks):
-            key = order[i]
-            key_mz = pred_mz[key]
-            j = i - 1
-            while j >= 0 and pred_mz[order[j]] > key_mz:
-                order[j + 1] = order[j]
-                j -= 1
-            order[j + 1] = key
-
-        # 7. Combine unresolved isotopologues
-        combined_mz = np.empty(n_peaks, dtype=np.float64)
-        combined_int = np.empty(n_peaks, dtype=np.float64)
-        n_combined = 0
-        i = 0
-        while i < n_peaks:
-            grp_mz_sum = pred_mz[order[i]] * pred_prob[order[i]]
-            grp_int_sum = pred_prob[order[i]]
-            j = i + 1
-            while j < n_peaks and abs(pred_mz[order[j]] - pred_mz[order[i]]) <= combine_tol:
-                grp_mz_sum += pred_mz[order[j]] * pred_prob[order[j]]
-                grp_int_sum += pred_prob[order[j]]
-                j += 1
-            combined_mz[n_combined] = grp_mz_sum / grp_int_sum
-            combined_int[n_combined] = grp_int_sum
-            n_combined += 1
-            i = j
-
-        # 8. Rescale to base peak = 1.0
-        mx = 0.0
-        for i in range(n_combined):
-            if combined_int[i] > mx:
-                mx = combined_int[i]
-        if mx > 0.0:
-            for i in range(n_combined):
-                combined_int[i] /= mx
-
-        # 9. Match observed peaks to closest predicted peak
-        n_obs = len(obs_mz)
-        pred_matched = np.zeros(n_obs, dtype=np.float64)
-        matched = np.zeros(n_obs, dtype=np.int32)
-
-        for i in range(n_obs):
-            best_diff = 1e30
-            best_j = -1
-            for j in range(n_combined):
-                d = abs(obs_mz[i] - combined_mz[j])
-                if d < best_diff:
-                    best_diff = d
-                    best_j = j
-            if best_diff <= match_tol:
-                pred_matched[i] = combined_int[best_j]
-                matched[i] = 1
-
-        # 10. Compute RMSE excluding base peak
-        base_idx = 0
-        max_obs = obs_int[0]
-        for i in range(1, n_obs):
-            if obs_int[i] > max_obs:
-                max_obs = obs_int[i]
-                base_idx = i
-
-        sse = 0.0
-        count = 0
-        n_matched = 0
-        for i in range(n_obs):
-            if matched[i]:
-                n_matched += 1
-            if i == base_idx:
-                continue
-            d = obs_int[i] - pred_matched[i]
-            sse += d * d
-            count += 1
-
-        rmse = (sse / count) ** 0.5 if count > 0 else 0.0
-        match_frac = n_matched / n_obs if n_obs > 0 else 0.0
-
-        return rmse, match_frac, n_matched
-
-    @njit
-    def _batch_score(iso_numbers, counts_2d, flat_masses, flat_probs,
-                     n_elements, n_candidates, obs_mz, obs_int,
-                     combine_tol, match_tol, threshold, charge, electron_mass):
-        rmse = np.empty(n_candidates, dtype=np.float64)
-        match_frac = np.empty(n_candidates, dtype=np.float64)
-        n_matched = np.empty(n_candidates, dtype=np.int32)
-        for i in range(n_candidates):
-            atom_counts = np.empty(n_elements, dtype=np.int32)
-            for j in range(n_elements):
-                atom_counts[j] = counts_2d[i, j]
-            r, mf, nm = _isospec_match_and_score(
-                iso_numbers, atom_counts, flat_masses, flat_probs, n_elements,
-                obs_mz, obs_int, combine_tol, match_tol, threshold,
-                charge, electron_mass)
-            rmse[i] = r
-            match_frac[i] = mf
-            n_matched[i] = nm
-        return rmse, match_frac, n_matched
-
-    return _isospec_match_and_score, _batch_score
-
-
-# Lazily compiled singletons
-_compiled_scorer = None
-_compiled_batch_scorer = None
-
-
-def _get_scorer():
-    """Get or create the compiled Numba scoring function."""
-    global _compiled_scorer, _compiled_batch_scorer
-    if _compiled_scorer is None:
-        _compiled_scorer, _compiled_batch_scorer = _make_isospec_match_and_score()
-    return _compiled_scorer
-
-
-def _get_scorers():
-    """Get or create both the individual and batch Numba scoring functions."""
-    global _compiled_scorer, _compiled_batch_scorer
-    if _compiled_scorer is None:
-        _compiled_scorer, _compiled_batch_scorer = _make_isospec_match_and_score()
-    return _compiled_scorer, _compiled_batch_scorer
-
 
 def match_isotope_envelope_fast(
     symbols: list[str] | tuple[str, ...],
@@ -575,84 +305,16 @@ def match_isotope_envelope_fast(
     simulated_intensity_threshold: float = 0.001,
 ) -> 'SingleEnvelopeMatchResult':
     """
-    Fast isotope envelope matching using Numba + C++ IsoSpecPy.
+    Fast isotope envelope matching using Cython + C++ IsoSpecPy.
 
     Replaces the string-based match_isotope_envelope() path with direct
-    C++ calls from Numba. Produces identical RMSE/match_fraction results.
-
-    Args:
-        symbols: Element symbols (e.g., ['C', 'H', 'N', 'O', 'P', 'S'])
-        counts: Atom counts matching symbols order
-        charge: Ion charge state
-        observed_envelope: 2D array of [m/z, intensity] pairs (normalized)
-        mz_match_tolerance: Max m/z difference for peak matching (Da)
-        simulated_mz_tolerance: Resolution for combining isotopologues
-        simulated_intensity_threshold: Min relative intensity threshold
-
-    Returns:
-        SingleEnvelopeMatchResult with RMSE, match fraction, etc.
-
-        Note: Unlike match_isotope_envelope(), the following fields are
-        simplified for performance:
-        - peak_matches: All True if any peak matched, all False otherwise
-          (not per-peak granularity). Only used for display, not filtering.
-        - predicted_envelope: Empty array (shape (0, 2)). The theoretical
-          envelope is computed inside the Numba scorer and not returned.
-          Only used for display, not filtering decisions.
+    C++ calls from Cython.
     """
-    from ._isospec_bridge import get_isotope_arrays
-
-    scorer = _get_scorer()
-
-    # Build isotope data arrays for the elements present
-    # Filter to non-zero elements only
-    active_symbols = []
-    active_counts = []
-    for sym, cnt in zip(symbols, counts):
-        if cnt > 0:
-            active_symbols.append(sym)
-            active_counts.append(cnt)
-
-    if not active_symbols:
-        from .results import SingleEnvelopeMatchResult
-        n_obs = observed_envelope.shape[0]
-        return SingleEnvelopeMatchResult(
-            num_peaks_matched=0,
-            num_peaks_total=n_obs,
-            intensity_rmse=1.0,
-            match_fraction=0.0,
-            peak_matches=np.full(n_obs, False),
-            predicted_envelope=np.empty((0, 2), dtype=np.float64),
-        )
-
-    iso_numbers, flat_masses, flat_probs = get_isotope_arrays(active_symbols)
-    atom_counts = np.array(active_counts, dtype=np.int32)
-    n_elements = len(active_symbols)
-
-    obs_mz = np.ascontiguousarray(observed_envelope[:, 0], dtype=np.float64)
-    obs_int = np.ascontiguousarray(observed_envelope[:, 1], dtype=np.float64)
-
-    rmse, match_frac, n_matched = scorer(
-        iso_numbers, atom_counts, flat_masses, flat_probs, n_elements,
-        obs_mz, obs_int,
-        simulated_mz_tolerance,
-        mz_match_tolerance,
+    from ._isospec import match_isotope_envelope_fast as _cython_match
+    return _cython_match(
+        symbols, counts, charge, observed_envelope,
+        mz_match_tolerance, simulated_mz_tolerance,
         simulated_intensity_threshold,
-        charge,
-        ELECTRON.mass,
-    )
-
-    n_obs = observed_envelope.shape[0]
-    peak_matches = np.full(n_obs, n_matched > 0)  # Simplified
-
-    from .results import SingleEnvelopeMatchResult
-    return SingleEnvelopeMatchResult(
-        num_peaks_matched=int(n_matched),
-        num_peaks_total=n_obs,
-        intensity_rmse=float(rmse),
-        match_fraction=float(match_frac),
-        peak_matches=peak_matches,
-        predicted_envelope=np.empty((0, 2), dtype=np.float64),
     )
 
 
@@ -668,8 +330,7 @@ def score_isotope_batch(
     """
     Batch isotope envelope scoring for multiple candidates at once.
 
-    Eliminates per-candidate Python→Numba transition overhead by scoring
-    all candidates in a single Numba call.
+    Uses Cython + C++ for high performance.
 
     Args:
         symbols: Element symbols (e.g., ['C', 'H', 'N', 'O', 'P', 'S'])
@@ -681,27 +342,11 @@ def score_isotope_batch(
         simulated_intensity_threshold: Min relative intensity threshold
 
     Returns:
-        Tuple of (rmse_arr, match_frac_arr, n_matched_arr) — raw numpy arrays
-        of shape (N,) with float64, float64, int32 dtypes respectively.
+        Tuple of (rmse_arr, match_frac_arr, n_matched_arr)
     """
-    from ._isospec_bridge import get_isotope_arrays
-
-    _, batch_scorer = _get_scorers()
-
-    iso_numbers, flat_masses, flat_probs = get_isotope_arrays(symbols)
-    n_elements = len(symbols)
-    n_candidates = counts_2d.shape[0]
-
-    counts_2d = np.ascontiguousarray(counts_2d, dtype=np.int32)
-    obs_mz = np.ascontiguousarray(observed_envelope[:, 0], dtype=np.float64)
-    obs_int = np.ascontiguousarray(observed_envelope[:, 1], dtype=np.float64)
-
-    return batch_scorer(
-        iso_numbers, counts_2d, flat_masses, flat_probs,
-        n_elements, n_candidates, obs_mz, obs_int,
-        simulated_mz_tolerance,
-        mz_match_tolerance,
+    from ._isospec import score_isotope_batch as _cython_batch
+    return _cython_batch(
+        symbols, counts_2d, charge, observed_envelope,
+        mz_match_tolerance, simulated_mz_tolerance,
         simulated_intensity_threshold,
-        charge,
-        ELECTRON.mass,
     )
