@@ -13,7 +13,7 @@ from .results import (
     Loss,
     SpectrumPeak,
 )
-from .scoring import SiriusLikeScoringConfig
+from .scoring import SiriusLikeScoringConfig, load_db_paired_formulas
 from .spectrum import FragmentationSpectrum
 
 __all__ = [
@@ -23,6 +23,7 @@ __all__ = [
     "FragmentCandidate",
     "ExplicitFragmentationScoring",
     "SiriusLikeScoringConfig",
+    "load_db_paired_formulas",
     "FragmentationTreeOptions",
     "Fragment",
     "Loss",

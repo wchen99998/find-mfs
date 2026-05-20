@@ -129,7 +129,8 @@ Formula                   Error (ppm)     Error (Da)      RDBE       Iso. Matche
 **Fragmentation trees**
 
 Fragmentation tree optimization uses explicit fragment candidates and scoring
-terms, then solves the exact colorful-tree ILP with the Rust HiGHS backend.
+terms, then solves the exact colorful-tree ILP with the Rust `good_lp`/HiGHS
+backend.
 
 ```python
 from find_mfs import (
@@ -157,8 +158,8 @@ tree.tree_score
 tree.losses_table()
 ```
 
-For raw MS/MS peaks, use `FragmentationSpectrum` and the built-in SIRIUS-like
-default scorer:
+For raw MS/MS peaks with a known precursor formula, use `FragmentationSpectrum`
+and the built-in SIRIUS-like default scorer:
 
 ```python
 from find_mfs import FragmentationSpectrum, SpectrumPeak
@@ -176,6 +177,16 @@ spectrum = FragmentationSpectrum(
 
 tree = FragmentationTreeFinder("CHNO").find_tree_from_spectrum(spectrum)
 ```
+
+For closest SIRIUS v6 reproduction, use
+`SiriusLikeScoringConfig.sirius_v6_reference(...)` and pass a caller-owned
+DB-paired formula map when you have one.
+
+See [the fragmentation tree engine notes](docs/fragmentation_tree_engine.md)
+for the public API shape, the SIRIUS v6 reference call, and the validation
+boundary. Small raw-spectrum fixtures assert exact equality against tracked
+SIRIUS v6 reference trees, while larger MassBank sweeps are treated as
+diagnostics rather than a requirement to copy every SIRIUS choice.
 
 ### Jupyter Notebook:
 See [this Jupyter notebook](docs/basic_usage.ipynb) for more thorough examples/demonstrations

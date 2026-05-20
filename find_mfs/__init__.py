@@ -43,6 +43,7 @@ from .fragmentation import (
     Loss,
     SiriusLikeScoringConfig,
     SpectrumPeak,
+    load_db_paired_formulas,
 )
 
 # Utility funcs
@@ -171,6 +172,7 @@ __all__ = [
     "FragmentCandidate",
     "ExplicitFragmentationScoring",
     "SiriusLikeScoringConfig",
+    "load_db_paired_formulas",
     "FragmentationTreeOptions",
     "Fragment",
     "Loss",

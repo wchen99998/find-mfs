@@ -180,6 +180,7 @@ benchmarks/inspect_*.py
 benchmarks/microbench*.py
 benchmarks/BENCHMARK_REPORT.md
 notes/
+tmp/
 
 # Cython generated C/C++ files
 *.c

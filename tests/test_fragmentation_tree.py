@@ -8,10 +8,17 @@ import pytest
 
 from find_mfs.fragmentation import (
     ExplicitFragmentationScoring,
+    Fragment,
     FragmentCandidate,
     FragmentationSpectrum,
+    FragmentationTree,
     FragmentationTreeFinder,
+    SiriusLikeScoringConfig,
+    SpectrumPeak,
+    load_db_paired_formulas,
 )
+from find_mfs.fragmentation.finder import _GeneratedCandidate
+from find_mfs.fragmentation.scoring import SiriusLikeScorer
 
 rust = pytest.importorskip("find_mfs._rust")
 
@@ -21,11 +28,399 @@ def test_public_fragmentation_api_is_exported_from_package():
         ExplicitFragmentationScoring as TopLevelScoring,
         FragmentCandidate as TopLevelFragmentCandidate,
         FragmentationTreeFinder as TopLevelFragmentationTreeFinder,
+        SiriusLikeScoringConfig as TopLevelSiriusLikeScoringConfig,
+        load_db_paired_formulas as top_level_load_db_paired_formulas,
     )
 
     assert TopLevelFragmentCandidate is FragmentCandidate
     assert TopLevelFragmentationTreeFinder is FragmentationTreeFinder
     assert TopLevelScoring is ExplicitFragmentationScoring
+    assert TopLevelSiriusLikeScoringConfig is SiriusLikeScoringConfig
+    assert top_level_load_db_paired_formulas is load_db_paired_formulas
+
+
+def test_sirius_like_db_paired_score_requires_explicit_formula_set():
+    scorer = SiriusLikeScorer("CH", SiriusLikeScoringConfig())
+    assert scorer.db_paired_score("C3H6", "C4H8") == 0.0
+
+    scorer = SiriusLikeScorer(
+        "CH",
+        SiriusLikeScoringConfig(
+            db_paired_formulas=frozenset({"C4H8", "C3H6"}),
+        ),
+    )
+
+    assert scorer.db_paired_score("C3H6", "C4H8") == 1.0
+    assert scorer.db_paired_score("C2H4", "C4H8") == 0.0
+    assert scorer.db_paired_score("C3H6", "C2H4") == 0.0
+
+
+def test_sirius_like_db_paired_formula_loader_accepts_text_lists(tmp_path):
+    formula_path = tmp_path / "db_formulas.txt"
+    formula_path.write_text(
+        "# caller-owned formula list\n"
+        "C31H36N2O11\n"
+        "C22H21NO6,source\n"
+        "\n"
+    )
+
+    assert load_db_paired_formulas(formula_path) == frozenset(
+        {"C31H36N2O11", "C22H21NO6"}
+    )
+
+
+def test_sirius_v6_reference_config_keeps_external_db_map_explicit():
+    formulas = frozenset({"C31H36N2O11", "C22H21NO6"})
+
+    config = SiriusLikeScoringConfig.sirius_v6_reference(
+        db_paired_formulas=formulas
+    )
+
+    assert config.strict_sirius_radical_parity is True
+    assert config.enable_common_fragment_score is False
+    assert config.enable_carbohydrogen_fragment_score is True
+    assert config.use_sirius_tree_size_quality_threshold is True
+    assert config.db_paired_formulas is formulas
+
+
+def test_sirius_v6_reference_disables_learned_common_fragment_table():
+    default_scorer = SiriusLikeScorer(
+        ["C", "H", "N"],
+        SiriusLikeScoringConfig(),
+    )
+    reference_scorer = SiriusLikeScorer(
+        ["C", "H", "N"],
+        SiriusLikeScoringConfig.sirius_v6_reference(),
+    )
+
+    assert default_scorer.common_fragment_score("C9H7N") > 0.0
+    assert reference_scorer.common_fragment_score("C9H7N") == 0.0
+
+
+def test_sirius_v6_tree_size_quality_uses_processed_peak_count():
+    finder = FragmentationTreeFinder("CH")
+    root = Fragment(
+        formula="C10H20",
+        counts=(10, 20),
+        ionization="[M+H]+",
+        peak_id=0,
+        color=0,
+        mass=141.0,
+        candidate_score=0.0,
+    )
+    selected = [
+        root,
+        *(
+            Fragment(
+                formula=f"C{index}H{2 * index}",
+                counts=(index, 2 * index),
+                ionization="[M+H]+",
+                peak_id=index,
+                color=index,
+                mass=float(index),
+                candidate_score=0.0,
+                intensity=1.0,
+            )
+            for index in range(1, 7)
+        ),
+    ]
+    tree = FragmentationTree(
+        root=root,
+        fragments=selected,
+        losses=[],
+        tree_score=0.0,
+        is_optimal=True,
+        solver_status="Optimal",
+        graph_vertex_count=0,
+        graph_edge_count=0,
+        reduced_vertex_count=0,
+        reduced_edge_count=0,
+    )
+    generated = {
+        fragment.formula: _GeneratedCandidate(
+            FragmentCandidate(
+                fragment.formula,
+                fragment.mass,
+                peak_id=fragment.peak_id or 0,
+                color=fragment.color,
+                intensity=1.0,
+            ),
+            fragment.counts,
+            fragment.mass,
+        )
+        for fragment in selected[1:]
+    }
+    config = SiriusLikeScoringConfig.sirius_v6_reference()
+
+    assert finder._is_high_quality_tree(
+        tree,
+        generated,
+        config,
+        processed_peak_count=7,
+    )
+    assert not finder._is_high_quality_tree(
+        tree,
+        generated,
+        config,
+        processed_peak_count=19,
+    )
+
+
+def test_sirius_like_default_config_uses_padded_search_and_ms2_window():
+    config = SiriusLikeScoringConfig()
+
+    assert config.ms2_tolerance_ppm == 10.0
+    assert config.mass_deviation_absolute_da == 0.002
+    assert config.candidate_search_ppm == 15.0
+    assert config.candidate_search_ppm > config.ms2_tolerance_ppm
+    assert config.max_fragment_peaks == 59
+
+
+def test_raw_candidate_generation_uses_absolute_ms2_search_window():
+    finder = FragmentationTreeFinder("CHNO")
+    config = SiriusLikeScoringConfig()
+    scorer = SiriusLikeScorer(finder.element_symbols, config)
+    root_counts = finder.parse_formula_counts("C25H47NO9")
+
+    generated = finder._generate_fragment_candidates(
+        [
+            SpectrumPeak(56.0502, 2933545.0),
+            SpectrumPeak(57.0706, 3416372.5),
+            SpectrumPeak(60.0450, 6733043.5),
+        ],
+        root_counts,
+        config,
+        scorer,
+        "C25H47NO9",
+        "[M+H]+",
+    )
+
+    assert {"C3H5N", "C4H8", "C2H5NO"}.issubset(generated)
+
+
+def test_raw_candidate_generation_pads_absolute_search_before_sirius_window_filter():
+    finder = FragmentationTreeFinder("CHNO")
+    config = SiriusLikeScoringConfig.sirius_v6_reference()
+    scorer = SiriusLikeScorer(finder.element_symbols, config)
+    root_counts = finder.parse_formula_counts("C34H59NO13")
+
+    generated = finder._generate_fragment_candidates(
+        [SpectrumPeak(58.0793, 2628.564208984375)],
+        root_counts,
+        config,
+        scorer,
+        "C34H59NO13",
+        "[M+H]+",
+        intensity_scale=19492.771484375,
+    )
+
+    assert "C4H9" in generated
+    assert abs(generated["C4H9"].candidate.mass - generated["C4H9"].theoretical_mz) <= (
+        config.mass_deviation_absolute_da
+    )
+
+
+def test_raw_candidate_generation_allows_sirius_negative_rdbe_fragments():
+    finder = FragmentationTreeFinder("CHNO")
+    config = SiriusLikeScoringConfig.sirius_v6_reference()
+    scorer = SiriusLikeScorer(finder.element_symbols, config)
+    root_counts = finder.parse_formula_counts("C34H59N3O9")
+
+    generated = finder._generate_fragment_candidates(
+        [SpectrumPeak(214.1411, 113263552.0)],
+        root_counts,
+        config,
+        scorer,
+        "C34H59N3O9",
+        "[M+H]+",
+        intensity_scale=207994960.0,
+    )
+
+    assert "C8H21O6" in generated
+
+
+def test_raw_candidate_scoring_normalizes_intensity_against_parent_peak():
+    finder = FragmentationTreeFinder("CHNO")
+    config = SiriusLikeScoringConfig()
+    scorer = SiriusLikeScorer(finder.element_symbols, config)
+    root_counts = finder.parse_formula_counts("C32H36N2O5")
+    peaks = [SpectrumPeak(130.0651, 4.0)]
+
+    generated = finder._generate_fragment_candidates(
+        peaks,
+        root_counts,
+        config,
+        scorer,
+        "C32H36N2O5",
+        "[M+H]+",
+        intensity_scale=8.0,
+    )
+    item = next(iter(generated.values()))
+    root = _GeneratedCandidate(
+        FragmentCandidate("C32H36N2O5", 529.2697, peak_id=0, color=0, intensity=8.0),
+        root_counts,
+        529.2697,
+    )
+    scoring = finder._build_sirius_like_scoring(
+        root,
+        generated,
+        scorer,
+        intensity_scale=8.0,
+    )
+
+    assert item.candidate.intensity == 4.0
+    assert scoring.peak_scores[item.candidate.color] == pytest.approx(
+        scorer.peak_score(item.candidate.mass, 0.5)
+    )
+
+
+def test_raw_preprocessing_can_merge_close_lower_intensity_peaks():
+    finder = FragmentationTreeFinder("CH")
+    spectrum = FragmentationSpectrum(
+        precursor_mz=150.0,
+        precursor_formula="C10H22",
+        peaks=[
+            SpectrumPeak(100.0000, 10.0),
+            SpectrumPeak(100.0010, 20.0),
+            SpectrumPeak(110.0, 5.0),
+        ],
+    )
+
+    _, merged_fragments = finder._split_root_peak(spectrum, SiriusLikeScoringConfig())
+    _, unmerged_fragments = finder._split_root_peak(
+        spectrum,
+        SiriusLikeScoringConfig(merge_close_peaks=False),
+    )
+
+    assert [peak.mz for peak in merged_fragments] == [100.0010, 110.0]
+    assert [peak.mz for peak in unmerged_fragments] == [100.0000, 100.0010, 110.0]
+
+
+def test_raw_preprocessing_default_peak_limit_is_parent_inclusive():
+    finder = FragmentationTreeFinder("CH")
+    spectrum = FragmentationSpectrum(
+        precursor_mz=500.0,
+        precursor_formula="C40H80",
+        peaks=[
+            *(SpectrumPeak(100.0 + index, float(index + 1)) for index in range(60)),
+            SpectrumPeak(500.0, 100.0),
+        ],
+    )
+
+    root_peak, fragments = finder._split_root_peak(spectrum, SiriusLikeScoringConfig())
+
+    assert root_peak is not None
+    assert len(fragments) == 58
+    assert {100.0, 101.0} not in {peak.mz for peak in fragments}
+
+
+def test_raw_preprocessing_keeps_weak_parent_outside_peak_limit():
+    finder = FragmentationTreeFinder("CH")
+    spectrum = FragmentationSpectrum(
+        precursor_mz=500.0,
+        precursor_formula="C40H80",
+        peaks=[
+            *(SpectrumPeak(100.0 + index, float(index + 1)) for index in range(60)),
+            SpectrumPeak(500.0, 0.5),
+        ],
+    )
+
+    root_peak, fragments = finder._split_root_peak(spectrum, SiriusLikeScoringConfig())
+
+    assert root_peak is not None
+    assert len(fragments) == 59
+    assert 100.0 not in {peak.mz for peak in fragments}
+
+
+def test_raw_candidate_generation_disjoins_nearby_duplicate_decompositions():
+    finder = FragmentationTreeFinder("CH")
+    peaks = [SpectrumPeak(100.0, 1.0), SpectrumPeak(100.001, 1.0)]
+    candidates_by_peak = [
+        {
+            "C2H4": _GeneratedCandidate(
+                FragmentCandidate("C2H4", 100.0, peak_id=1, color=1),
+                (2, 4),
+                100.0004,
+            )
+        },
+        {
+            "C2H4": _GeneratedCandidate(
+                FragmentCandidate("C2H4", 100.001, peak_id=2, color=2),
+                (2, 4),
+                100.0008,
+            )
+        },
+    ]
+
+    finder._disjoin_nearby_fragment_candidates(
+        peaks,
+        candidates_by_peak,
+        SiriusLikeScoringConfig(),
+    )
+
+    assert "C2H4" not in candidates_by_peak[0]
+    assert "C2H4" in candidates_by_peak[1]
+
+
+def test_sirius_like_carbohydrogen_scores_match_v6_default_plugin():
+    default_scorer = SiriusLikeScorer("CHNO", SiriusLikeScoringConfig())
+    scorer = SiriusLikeScorer(
+        "CHNO",
+        SiriusLikeScoringConfig(enable_carbohydrogen_fragment_score=True),
+    )
+    cho_counts = (8, 12, 0, 1)
+    chno_counts = (8, 12, 1, 1)
+
+    assert scorer.carbohydrogen_root_score(cho_counts) == 2.5
+    assert scorer.carbohydrogen_root_score(chno_counts) == 0.0
+    assert default_scorer.carbohydrogen_fragment_score(cho_counts, 0.5) == 0.0
+    assert scorer.carbohydrogen_fragment_score(cho_counts, 0.02) == 0.0
+    assert scorer.carbohydrogen_fragment_score(chno_counts, 0.5) == 0.0
+    assert scorer.carbohydrogen_fragment_score(cho_counts, 0.5) == pytest.approx(0.5)
+
+
+def test_sirius_like_common_loss_scores_match_v6_recombination_edge_cases():
+    scorer = SiriusLikeScorer("CHNO", SiriusLikeScoringConfig())
+
+    assert scorer.common_loss_score("C2H6") == pytest.approx(-1.3646611753318298)
+    assert scorer.common_loss_score("C2H4O") == pytest.approx(-0.6057228211483281)
+    assert scorer.common_loss_score("C15H21NO7") == pytest.approx(2.4976227503252453)
+    assert scorer.common_loss_score("C3H2O") == pytest.approx(0.19848183290332289)
+
+
+def test_sirius_like_multimere_and_fatty_acid_chain_loss_scores_match_v6():
+    scorer = SiriusLikeScorer("CHNO", SiriusLikeScoringConfig())
+    c7h8o_counts = (7, 8, 0, 1)
+
+    assert scorer.multimere_loss_score("C7H8O", "C7H8O", False) == 2.0
+    assert scorer.multimere_loss_score("C7H8O", "C7H8O", True) == 10.0
+    assert scorer.multimere_loss_score("C7H8O", "C8H8O", False) == 0.0
+    assert scorer.lipid_chain_from_counts(c7h8o_counts) == (7, 2)
+    assert scorer.fatty_acid_chain_loss_score("C7H8O", c7h8o_counts) == pytest.approx(
+        0.1657309333723955
+    )
+
+
+def test_sirius_like_free_radical_scoring_matches_v6_negative_rdbe_parity():
+    default_scorer = SiriusLikeScorer("CHNO", SiriusLikeScoringConfig())
+    scorer = SiriusLikeScorer(
+        "CHNO",
+        SiriusLikeScoringConfig(strict_sirius_radical_parity=True),
+    )
+
+    assert scorer.doubled_rdbe((1, 6, 1, 0)) == -1
+    assert default_scorer.free_radical_loss_score("CH6N", (1, 6, 1, 0)) == pytest.approx(
+        -2.2909585508352253
+    )
+    assert scorer.free_radical_loss_score("CH6N", (1, 6, 1, 0)) == pytest.approx(
+        0.011626542158820332
+    )
+    assert scorer.free_radical_loss_score("CH3", (1, 3, 0, 0)) == pytest.approx(
+        -0.09373397349900595
+    )
+    assert scorer.free_radical_loss_score("CH2N", (1, 2, 1, 0)) == pytest.approx(
+        -2.2909585508352253
+    )
 
 
 def test_rust_fragmentation_tree_python_bridge_solves_colorful_tree():
@@ -141,6 +536,31 @@ NOVOBIOCIN_SIRIUS_LOSSES = {
     ("C12H11N2O", "C11H10N"): -1.5806418664147743,
     ("C11H9N2O", "C10H8N"): -1.5806376675416292,
     ("C12H12O2", "C7H8O2"): -1.8994978850669497,
+}
+
+NOVOBIOCIN_SIRIUS_V6_RAW_REFERENCE = {
+    "tree_score": 33.068402054104155,
+    "formulas": {
+        "C31H36N2O11",
+        "C22H21NO6",
+        "C12H13N2O2",
+        "C12H11N2O",
+        "C12H12O2",
+        "C11H9N2O",
+        "C11H10N",
+        "C10H8N",
+        "C7H8O2",
+    },
+    "losses": {
+        ("C31H36N2O11", "C22H21NO6", "C9H15NO5"),
+        ("C31H36N2O11", "C12H13N2O2", "C19H23O9"),
+        ("C12H13N2O2", "C12H11N2O", "H2O"),
+        ("C22H21NO6", "C12H12O2", "C10H9NO4"),
+        ("C12H13N2O2", "C11H9N2O", "CH4O"),
+        ("C12H11N2O", "C11H10N", "CHNO"),
+        ("C12H11N2O", "C10H8N", "C2H3NO"),
+        ("C12H12O2", "C7H8O2", "C5H4"),
+    },
 }
 
 MASSBANK_FIXTURE = Path(__file__).parent / "data" / "fragmentation_massbank_records.json"
@@ -304,22 +724,22 @@ def test_public_api_novobiocin_sirius_scored_tree_matches_reference():
 SIRIUS_RAW_REFERENCE_TARGETS = {
     "MSBNK-Athens_Univ-AU276702": {
         "name": "acetaminophen",
-        "tree_score": 6.164391034221983,
+        "tree_score": 10.777285849243086,
         "formulas": {
             "C8H9NO2",
             "C8H7NO",
             "C6H7NO",
+            "C6H6NO",
         },
         "losses": {
             ("C8H9NO2", "C8H7NO", "H2O"),
             ("C8H9NO2", "C6H7NO", "C2H2O"),
+            ("C8H9NO2", "C6H6NO", "C2H3O"),
         },
-        "min_formula_overlap": 3,
-        "min_loss_overlap": 2,
     },
     "MSBNK-ACES_SU-AS000913": {
         "name": "caffeine",
-        "tree_score": 36.631475583426344,
+        "tree_score": 46.759362437290264,
         "formulas": {
             "C8H10N4O2",
             "C7H7N4O2",
@@ -345,12 +765,10 @@ SIRIUS_RAW_REFERENCE_TARGETS = {
             ("C5H6N2O", "C3H4N2", "C2H2O"),
             ("C4H6N2", "C3H5N", "CHN"),
         },
-        "min_formula_overlap": 10,
-        "min_loss_overlap": 9,
     },
     "MSBNK-Athens_Univ-AU110802": {
         "name": "propranolol",
-        "tree_score": 40.56118139783991,
+        "tree_score": 74.76887380398153,
         "formulas": {
             "C16H21NO2",
             "C16H19NO",
@@ -378,12 +796,10 @@ SIRIUS_RAW_REFERENCE_TARGETS = {
             ("C11H8O", "C10H8", "CO"),
             ("C13H15NO2", "C6H13NO", "C7H2O"),
         },
-        "min_formula_overlap": 11,
-        "min_loss_overlap": 10,
     },
     "MSBNK-Athens_Univ-AU121202": {
         "name": "lidocaine",
-        "tree_score": 3.2725929705549333,
+        "tree_score": 11.320980621477784,
         "formulas": {
             "C14H22N2O",
             "C14H20N2",
@@ -395,13 +811,11 @@ SIRIUS_RAW_REFERENCE_TARGETS = {
             ("C14H22N2O", "C10H11NO", "C4H11N"),
             ("C10H11NO", "C9H11N", "CO"),
         },
-        "min_formula_overlap": 4,
-        "min_loss_overlap": 3,
     },
 }
 
 
-def test_raw_massbank_novobiocin_reconstructs_rough_sirius_tree():
+def test_raw_massbank_novobiocin_matches_sirius_v6_tree():
     records = {
         record["accession"]: record
         for record in json.loads(MASSBANK_FIXTURE.read_text())
@@ -413,19 +827,44 @@ def test_raw_massbank_novobiocin_reconstructs_rough_sirius_tree():
 
     tree = finder.find_tree_from_spectrum(spectrum)
     selected = {fragment.formula for fragment in tree.fragments}
-    reference = {row[0] for row in NOVOBIOCIN_SIRIUS_FRAGMENTS}
+    selected_losses = {
+        (loss.source.formula, loss.target.formula, loss.formula)
+        for loss in tree.losses
+    }
+    reference = NOVOBIOCIN_SIRIUS_V6_RAW_REFERENCE["formulas"]
+    reference_losses = NOVOBIOCIN_SIRIUS_V6_RAW_REFERENCE["losses"]
 
     assert tree.root.formula == "C31H36N2O11"
     assert tree.is_optimal
-    assert len(selected & reference) >= 7
-    assert {
-        "C12H13N2O2",
-        "C12H11N2O",
-        "C12H12O2",
-        "C11H9N2O",
-        "C10H8N",
-        "C7H8O2",
-    }.issubset(selected)
+    assert selected == reference
+    assert selected_losses == reference_losses
+
+
+def test_raw_massbank_novobiocin_strict_parity_matches_with_external_db_map():
+    records = {
+        record["accession"]: record
+        for record in json.loads(MASSBANK_FIXTURE.read_text())
+    }
+    spectrum = FragmentationSpectrum.from_massbank_record(
+        records["MSBNK-Athens_Univ-AU116706"]
+    )
+    finder = FragmentationTreeFinder("CHNO")
+
+    tree = finder.find_tree_from_spectrum(
+        spectrum,
+        scoring_config=SiriusLikeScoringConfig(
+            strict_sirius_radical_parity=True,
+            db_paired_formulas=frozenset({"C31H36N2O11", "C22H21NO6"}),
+        ),
+    )
+    selected = {fragment.formula for fragment in tree.fragments}
+    selected_losses = {
+        (loss.source.formula, loss.target.formula, loss.formula)
+        for loss in tree.losses
+    }
+
+    assert selected == NOVOBIOCIN_SIRIUS_V6_RAW_REFERENCE["formulas"]
+    assert selected_losses == NOVOBIOCIN_SIRIUS_V6_RAW_REFERENCE["losses"]
 
 
 @pytest.mark.parametrize(
@@ -433,7 +872,7 @@ def test_raw_massbank_novobiocin_reconstructs_rough_sirius_tree():
     list(SIRIUS_RAW_REFERENCE_TARGETS.items()),
     ids=[target["name"] for target in SIRIUS_RAW_REFERENCE_TARGETS.values()],
 )
-def test_raw_massbank_reference_targets_roughly_match_sirius_trees(
+def test_raw_massbank_reference_targets_match_sirius_v6_trees(
     accession,
     reference,
 ):
@@ -455,5 +894,5 @@ def test_raw_massbank_reference_targets_roughly_match_sirius_trees(
     assert tree.root.formula == spectrum.precursor_formula
     assert tree.is_optimal
     assert len(tree.losses) == len(tree.fragments) - 1
-    assert len(selected & reference["formulas"]) >= reference["min_formula_overlap"]
-    assert len(selected_losses & reference["losses"]) >= reference["min_loss_overlap"]
+    assert selected == reference["formulas"]
+    assert selected_losses == reference["losses"]
