@@ -1,2 +1,6 @@
 include README.md
-recursive-include find_mfs *.py *.pyx *.pxd
+include RUST_PARITY_NOTES.md
+recursive-include benchmarks *.py
+recursive-include find_mfs *.py *.pyi *.pyx *.pxd
+include find_mfs/rust/Cargo.lock
+recursive-include find_mfs/rust *.toml *.rs

@@ -233,6 +233,17 @@ class FormulaPrior:
         Returns:
             None (results are scored in-place)
         """
+        if not self._fitted:
+            raise RuntimeError("Must call fit() before score_results()")
+
+        backend = getattr(results, '_backend', None)
+        if backend is not None:
+            if backend._score_with_prior(
+                *self._rust_prior_payload(),
+                mass_sigma_ppm=mass_sigma_ppm,
+                isotope_sigma=isotope_sigma,
+            ):
+                return None
 
         for candidate in results.candidates:
             candidate: 'FormulaCandidate'
@@ -254,6 +265,54 @@ class FormulaPrior:
                 )
 
             candidate.posterior_score = log_posterior
+
+        return None
+
+    def _rust_prior_payload(
+        self,
+    ) -> tuple[
+        list[str],
+        list[float],
+        list[list[float]],
+        list[list[float]],
+        list[float],
+        float,
+    ]:
+        ratio_elements = list(_RATIO_ELEMENTS)
+        p_absent = [
+            float(self._p_absent.get(elem, 1.0))
+            for elem in ratio_elements
+        ]
+        kde_points: list[list[float]] = []
+        kde_weights: list[list[float]] = []
+        kde_variance: list[float] = []
+
+        for elem in ratio_elements:
+            kde = self._kdes.get(elem)
+            if kde is None:
+                kde_points.append([])
+                kde_weights.append([])
+                kde_variance.append(0.0)
+                continue
+
+            kde_points.append(
+                np.asarray(kde.dataset[0], dtype=np.float64).tolist()
+            )
+            kde_weights.append(
+                np.asarray(kde.weights, dtype=np.float64).tolist()
+            )
+            kde_variance.append(
+                float(np.asarray(kde.covariance, dtype=np.float64)[0, 0])
+            )
+
+        return (
+            ratio_elements,
+            p_absent,
+            kde_points,
+            kde_weights,
+            kde_variance,
+            float(_UNIFORM_WEIGHT),
+        )
 
 
 

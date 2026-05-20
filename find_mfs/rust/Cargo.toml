@@ -1,0 +1,22 @@
+[package]
+name = "find-mfs-rust"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+
+[lib]
+name = "_rust"
+crate-type = ["cdylib"]
+
+[dependencies]
+libloading = "0.8"
+pyo3 = { version = "0.22.6", optional = true }
+
+[features]
+default = ["extension-module"]
+extension-module = ["dep:pyo3", "pyo3/extension-module"]
+
+[profile.release]
+lto = true
+codegen-units = 1

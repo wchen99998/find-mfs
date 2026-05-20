@@ -61,6 +61,7 @@ cdef class LightFormula:
         counts,
         int charge=0,
         double monoisotopic_mass=0.0,
+        formula_str=None,
     ):
         """
         Construct from parallel symbols/counts with minimal overhead.
@@ -74,7 +75,7 @@ cdef class LightFormula:
         obj._counts = counts
         obj._charge = charge
         obj._monoisotopic_mass = monoisotopic_mass
-        obj._formula_str = None
+        obj._formula_str = formula_str
         obj._empirical_str = None
         return obj
 

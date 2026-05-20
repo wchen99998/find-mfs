@@ -21,6 +21,127 @@ from ..utils.table import render_table, render_dataframe
 if TYPE_CHECKING:
     import pandas as pd
 
+AdductElements = dict[str, int] | tuple[list[str], list[int]]
+RawDisplayRow = tuple[
+    str,
+    float,
+    float,
+    Optional[float],
+    Optional[str],
+    Optional[float],
+    Optional[float],
+]
+
+
+def _raw_rows_have_isotope(rows: list[RawDisplayRow]) -> bool:
+    return any(
+        isotope_matches is not None or isotope_rmse is not None
+        for _, _, _, _, isotope_matches, isotope_rmse, _ in rows
+    )
+
+
+def _raw_rows_have_prior(rows: list[RawDisplayRow]) -> bool:
+    return any(prior_score is not None for *_, prior_score in rows)
+
+
+def _render_raw_table(
+    rows: list[RawDisplayRow],
+    max_rows: Optional[int],
+    total: int,
+) -> str:
+    if not rows:
+        return "No candidates found."
+
+    columns = [
+        ('Formula', 25, '<', lambda row: row[0]),
+        ('Error (ppm)', 15, '>', lambda row: f"{row[1]:.2f}"),
+        ('Error (Da)', 15, '>', lambda row: f"{row[2]:.6f}"),
+        (
+            'RDBE',
+            10,
+            '>',
+            lambda row: f"{row[3]:.1f}" if row[3] is not None else "N/A",
+        ),
+    ]
+    if _raw_rows_have_isotope(rows):
+        columns.extend(
+            [
+                ('Iso. Matches', 15, '>', lambda row: row[4] or ""),
+                (
+                    'Iso. RMSE',
+                    10,
+                    '>',
+                    lambda row: (
+                        f"{row[5]:.4f}" if row[5] is not None else ""
+                    ),
+                ),
+            ]
+        )
+    if _raw_rows_have_prior(rows):
+        columns.append(
+            (
+                'Prior',
+                10,
+                '>',
+                lambda row: (
+                    f"{row[6]:.2f}" if row[6] is not None else ""
+                ),
+            )
+        )
+
+    header = " ".join(
+        f"{title:{align}{width}}" for title, width, align, _ in columns
+    )
+    sep = "-" * len(header)
+    body = [
+        " ".join(
+            f"{value(row):{align}{width}}"
+            for _, width, align, value in columns
+        )
+        for row in rows
+    ]
+    lines = [header, sep] + body
+    if max_rows is not None and total > max_rows:
+        lines.append(f"... and {total - max_rows} more")
+    return "\n".join(lines)
+
+
+def _render_raw_dataframe(rows: list[RawDisplayRow]) -> 'pd.DataFrame':
+    try:
+        import pandas as pd
+    except ImportError:
+        raise ImportError(
+            "pandas is required for to_dataframe(). "
+            "Install with: pip install pandas"
+        )
+
+    has_isotope = _raw_rows_have_isotope(rows)
+    has_prior = _raw_rows_have_prior(rows)
+    data = []
+    for (
+        formula,
+        error_ppm,
+        error_da,
+        rdbe,
+        isotope_matches,
+        isotope_rmse,
+        prior_score,
+    ) in rows:
+        row = {
+            'formula': formula,
+            'error_ppm': error_ppm,
+            'error_da': error_da,
+            'rdbe': rdbe,
+        }
+        if has_isotope:
+            row['isotope_matches'] = isotope_matches
+            row['isotope_rmse'] = isotope_rmse
+        if has_prior:
+            row['prior_score'] = prior_score
+        data.append(row)
+
+    return pd.DataFrame(data)
+
 
 class _LazyBackend:
     """
@@ -31,12 +152,14 @@ class _LazyBackend:
     inspect a few of them.
     """
     __slots__ = (
+        '_rust_result',
         '_counts', '_exact_masses', '_error_ppm', '_error_da',
         '_rdbe', '_iso_rmse', '_iso_match_frac', '_iso_n_matched',
-        '_iso_peak_matches',
+        '_iso_peak_matches', '_formula_strings',
         '_symbols', '_charge', '_ion_charge', '_adduct', '_adduct_elements', '_n_obs',
         '_charge_mass_offset', '_adduct_mass',
         '_simulated_mz_tolerance', '_simulated_intensity_threshold',
+        '_isotope_envelope_backend',
         '_cache',
     )
 
@@ -47,22 +170,37 @@ class _LazyBackend:
         charge: int,
         ion_charge: int,
         adduct: str | None = None,
-        adduct_elements: dict[str, int] | None = None,
+        adduct_elements: AdductElements | None = None,
         n_obs: int = 0,
         charge_mass_offset: float = 0.0,
         adduct_mass: float = 0.0,
         simulated_mz_tolerance: float | None = None,
         simulated_intensity_threshold: float | None = None,
+        isotope_envelope_backend=None,
     ):
-        self._counts = raw['counts']
-        self._exact_masses = raw['exact_masses']
-        self._error_ppm = raw['error_ppm']
-        self._error_da = raw['error_da']
-        self._rdbe = raw.get('rdbe')
-        self._iso_rmse = raw.get('iso_rmse')
-        self._iso_match_frac = raw.get('iso_match_frac')
-        self._iso_n_matched = raw.get('iso_n_matched')
-        self._iso_peak_matches = raw.get('iso_peak_matches')
+        self._rust_result = raw.get('rust_result')
+        if self._rust_result is None:
+            self._counts = raw['counts']
+            self._exact_masses = raw['exact_masses']
+            self._error_ppm = raw['error_ppm']
+            self._error_da = raw['error_da']
+            self._rdbe = raw.get('rdbe')
+            self._iso_rmse = raw.get('iso_rmse')
+            self._iso_match_frac = raw.get('iso_match_frac')
+            self._iso_n_matched = raw.get('iso_n_matched')
+            self._iso_peak_matches = raw.get('iso_peak_matches')
+            self._formula_strings = raw.get('formula_strings')
+        else:
+            self._counts = None
+            self._exact_masses = None
+            self._error_ppm = None
+            self._error_da = None
+            self._rdbe = None
+            self._iso_rmse = None
+            self._iso_match_frac = None
+            self._iso_n_matched = None
+            self._iso_peak_matches = None
+            self._formula_strings = self._rust_result.formula_strings()
         self._symbols = symbols
         self._charge = charge
         self._ion_charge = ion_charge
@@ -73,9 +211,12 @@ class _LazyBackend:
         self._adduct_mass = adduct_mass
         self._simulated_mz_tolerance = simulated_mz_tolerance
         self._simulated_intensity_threshold = simulated_intensity_threshold
+        self._isotope_envelope_backend = isotope_envelope_backend
         self._cache: dict[int, FormulaCandidate] = {}
 
     def __len__(self) -> int:
+        if self._rust_result is not None:
+            return len(self._rust_result)
         return self._counts.shape[0]
 
     def _build_ion_formula(
@@ -90,7 +231,12 @@ class _LazyBackend:
         ion_elements = {
             sym: count for sym, count in zip(self._symbols, row_list) if count > 0
         }
-        for sym, delta in self._adduct_elements.items():
+        if isinstance(self._adduct_elements, tuple):
+            adduct_items = zip(*self._adduct_elements)
+        else:
+            adduct_items = self._adduct_elements.items()
+
+        for sym, delta in adduct_items:
             updated = ion_elements.get(sym, 0) + delta
             if updated < 0:
                 return None
@@ -109,7 +255,53 @@ class _LazyBackend:
         if idx in self._cache:
             return self._cache[idx]
 
-        row_list = self._counts[idx].tolist()
+        prior_score = None
+        posterior_score = None
+        if self._rust_result is None:
+            row_list = self._counts[idx].tolist()
+            exact_mass = float(self._exact_masses[idx])
+            error_ppm = float(self._error_ppm[idx])
+            error_da = float(self._error_da[idx])
+            rdbe = float(self._rdbe[idx]) if self._rdbe is not None else None
+            formula_str = (
+                None if self._formula_strings is None
+                else self._formula_strings[idx]
+            )
+            isotope_row = None
+            if self._iso_rmse is not None:
+                if self._iso_peak_matches is not None:
+                    peak_matches = self._iso_peak_matches[idx].astype(bool)
+                else:
+                    peak_matches = np.full(
+                        self._n_obs,
+                        self._iso_n_matched[idx] > 0,
+                    )
+                isotope_row = (
+                    float(self._iso_rmse[idx]),
+                    float(self._iso_match_frac[idx]),
+                    int(self._iso_n_matched[idx]),
+                    peak_matches,
+                )
+        else:
+            (
+                row_list,
+                exact_mass,
+                error_ppm,
+                error_da,
+                rdbe,
+                isotope_payload,
+                formula_str,
+            ) = self._rust_result.row(idx)
+            isotope_row = None
+            if isotope_payload is not None:
+                rmse, match_frac, n_matched, peak_matches = isotope_payload
+                isotope_row = (
+                    float(rmse),
+                    float(match_frac),
+                    int(n_matched),
+                    np.asarray(peak_matches, dtype=bool),
+                )
+            prior_score, posterior_score = self._rust_result.score_values(idx)
 
         if self._adduct is not None:
             # Adduct path: core molecule is neutral
@@ -118,59 +310,71 @@ class _LazyBackend:
                 counts=row_list,
                 charge=0,
                 monoisotopic_mass=(
-                    float(self._exact_masses[idx])
+                    float(exact_mass)
                     + self._charge_mass_offset
                     - self._adduct_mass
                 ),
+                formula_str=formula_str,
             )
         else:
             formula = LightFormula.from_counts(
                 symbols=self._symbols,
                 counts=row_list,
                 charge=self._charge,
-                monoisotopic_mass=float(self._exact_masses[idx]),
+                monoisotopic_mass=float(exact_mass),
+                formula_str=formula_str,
             )
 
         isotope_result = None
-        if self._iso_rmse is not None:
+        if isotope_row is not None:
             predicted_envelope = np.empty((0, 2), dtype=np.float64)
             if (
                 self._simulated_mz_tolerance is not None
                 and self._simulated_intensity_threshold is not None
             ):
-                from ..isotopes.envelope import get_isotope_envelope
-                ion_formula = self._build_ion_formula(
-                    idx=idx,
-                    row_list=row_list,
-                    core_formula=formula,
-                )
-                if ion_formula is not None:
-                    predicted_envelope = get_isotope_envelope(
-                        formula=ion_formula,
-                        mz_tolerance=self._simulated_mz_tolerance,
-                        threshold=self._simulated_intensity_threshold,
+                if self._isotope_envelope_backend is not None:
+                    predicted_envelope = (
+                        self._isotope_envelope_backend.simulate_isotope_envelope(
+                            row_list,
+                            self._adduct_elements,
+                            self._ion_charge,
+                            self._simulated_mz_tolerance,
+                            self._simulated_intensity_threshold,
+                        )
                     )
+                else:
+                    from ..isotopes.envelope import get_isotope_envelope
+                    ion_formula = self._build_ion_formula(
+                        idx=idx,
+                        row_list=row_list,
+                        core_formula=formula,
+                    )
+                    if ion_formula is not None:
+                        predicted_envelope = get_isotope_envelope(
+                            formula=ion_formula,
+                            mz_tolerance=self._simulated_mz_tolerance,
+                            threshold=self._simulated_intensity_threshold,
+                        )
 
-            if self._iso_peak_matches is not None:
-                peak_matches = self._iso_peak_matches[idx].astype(bool)
-            else:
-                peak_matches = np.full(self._n_obs, self._iso_n_matched[idx] > 0)
+            rmse, match_frac, n_matched, peak_matches = isotope_row
             isotope_result = IsotopeMatchResult(
-                num_peaks_matched=int(self._iso_n_matched[idx]),
+                num_peaks_matched=n_matched,
                 num_peaks_total=self._n_obs,
-                intensity_rmse=float(self._iso_rmse[idx]),
-                match_fraction=float(self._iso_match_frac[idx]),
+                intensity_rmse=rmse,
+                match_fraction=match_frac,
                 peak_matches=peak_matches,
                 predicted_envelope=predicted_envelope,
             )
 
         candidate = FormulaCandidate(
             formula=formula,
-            error_ppm=float(self._error_ppm[idx]),
-            error_da=float(self._error_da[idx]),
-            rdbe=float(self._rdbe[idx]) if self._rdbe is not None else None,
+            error_ppm=error_ppm,
+            error_da=error_da,
+            rdbe=rdbe,
             adduct=self._adduct,
             isotope_match_result=isotope_result,
+            prior_score=prior_score,
+            posterior_score=posterior_score,
         )
         self._cache[idx] = candidate
         return candidate
@@ -180,6 +384,10 @@ class _LazyBackend:
         Return a new _LazyBackend reindexed
         by slice, boolean mask, or int array
         """
+        if self._rust_result is not None:
+            indices = self._indices_from_selector(idx)
+            return self._with_rust_result(self._rust_result.take_indices(indices))
+
         raw = {
             'counts': self._counts[idx],
             'exact_masses': self._exact_masses[idx],
@@ -194,6 +402,11 @@ class _LazyBackend:
             raw['iso_n_matched'] = self._iso_n_matched[idx]
         if self._iso_peak_matches is not None:
             raw['iso_peak_matches'] = self._iso_peak_matches[idx]
+        if self._formula_strings is not None:
+            if isinstance(idx, (int, np.integer)):
+                raw['formula_strings'] = [self._formula_strings[int(idx)]]
+            else:
+                raw['formula_strings'] = list(np.asarray(self._formula_strings, dtype=object)[idx])
         return _LazyBackend(
             raw=raw,
             symbols=self._symbols,
@@ -206,7 +419,166 @@ class _LazyBackend:
             adduct_mass=self._adduct_mass,
             simulated_mz_tolerance=self._simulated_mz_tolerance,
             simulated_intensity_threshold=self._simulated_intensity_threshold,
+            isotope_envelope_backend=self._isotope_envelope_backend,
         )
+
+    def _indices_from_selector(self, idx) -> list[int]:
+        if isinstance(idx, (int, np.integer)):
+            value = int(idx)
+            if value < 0:
+                value += len(self)
+            return [value]
+        if isinstance(idx, slice):
+            return list(range(len(self)))[idx]
+
+        arr = np.asarray(idx)
+        if arr.dtype == bool:
+            return np.flatnonzero(arr).astype(np.intp).tolist()
+
+        values = arr.astype(np.intp, copy=False).tolist()
+        if isinstance(values, int):
+            values = [values]
+        return [value + len(self) if value < 0 else value for value in values]
+
+    def _with_rust_result(self, rust_result) -> '_LazyBackend':
+        return _LazyBackend(
+            raw={'rust_result': rust_result},
+            symbols=self._symbols,
+            charge=self._charge,
+            ion_charge=self._ion_charge,
+            adduct=self._adduct,
+            adduct_elements=self._adduct_elements,
+            n_obs=self._n_obs,
+            charge_mass_offset=self._charge_mass_offset,
+            adduct_mass=self._adduct_mass,
+            simulated_mz_tolerance=self._simulated_mz_tolerance,
+            simulated_intensity_threshold=self._simulated_intensity_threshold,
+            isotope_envelope_backend=self._isotope_envelope_backend,
+        )
+
+    def _sort_by_error(self, reverse: bool = False) -> '_LazyBackend':
+        if self._rust_result is not None:
+            return self._with_rust_result(self._rust_result.sort_by_error(reverse))
+
+        order = np.argsort(np.abs(self._error_da))
+        if reverse:
+            order = order[::-1]
+        return self._reindex(order)
+
+    def _sort_by_rmse(self, reverse: bool = False) -> '_LazyBackend':
+        if self._rust_result is not None:
+            return self._with_rust_result(self._rust_result.sort_by_rmse(reverse))
+
+        if self._iso_rmse is None:
+            return self
+        order = np.argsort(self._iso_rmse)
+        if reverse:
+            order = order[::-1]
+        return self._reindex(order)
+
+    def _sort_by_prior(self, reverse: bool = False) -> '_LazyBackend | None':
+        if self._rust_result is None or self._cache:
+            return None
+        return self._with_rust_result(self._rust_result.sort_by_prior(reverse))
+
+    def _sort_by_posterior(self, reverse: bool = False) -> '_LazyBackend | None':
+        if self._rust_result is None or self._cache:
+            return None
+        return self._with_rust_result(
+            self._rust_result.sort_by_posterior(reverse)
+        )
+
+    def _score_with_prior(
+        self,
+        ratio_elements: list[str],
+        p_absent: list[float],
+        kde_points: list[list[float]],
+        kde_weights: list[list[float]],
+        kde_variance: list[float],
+        uniform_weight: float,
+        mass_sigma_ppm: float,
+        isotope_sigma: float,
+    ) -> bool:
+        if self._rust_result is None or self._cache:
+            return False
+        self._rust_result = self._rust_result.score_prior(
+            self._symbols,
+            ratio_elements,
+            p_absent,
+            kde_points,
+            kde_weights,
+            kde_variance,
+            uniform_weight,
+            mass_sigma_ppm,
+            isotope_sigma,
+        )
+        self._formula_strings = self._rust_result.formula_strings()
+        return True
+
+    def _filter_by_rdbe_range(
+        self,
+        min_rdbe: float,
+        max_rdbe: float,
+    ) -> '_LazyBackend':
+        if self._rust_result is not None:
+            return self._with_rust_result(
+                self._rust_result.filter_by_rdbe(min_rdbe, max_rdbe)
+            )
+
+        if self._rdbe is None:
+            return self._reindex(np.zeros(len(self), dtype=bool))
+        mask = (self._rdbe >= min_rdbe) & (self._rdbe <= max_rdbe)
+        return self._filter_by_mask(mask)
+
+    def _filter_by_error_limits(
+        self,
+        max_ppm: float | None = None,
+        max_da: float | None = None,
+    ) -> '_LazyBackend':
+        if self._rust_result is not None:
+            return self._with_rust_result(
+                self._rust_result.filter_by_error(max_ppm, max_da)
+            )
+
+        mask = np.ones(len(self), dtype=bool)
+        if max_ppm is not None:
+            mask &= np.abs(self._error_ppm) <= max_ppm
+        if max_da is not None:
+            mask &= np.abs(self._error_da) <= max_da
+        return self._filter_by_mask(mask)
+
+    def _filter_by_isotope_quality_limits(
+        self,
+        max_match_rmse: float,
+        min_match_fraction: float,
+    ) -> '_LazyBackend':
+        if self._rust_result is not None:
+            return self._with_rust_result(
+                self._rust_result.filter_by_isotope_quality(
+                    max_match_rmse,
+                    min_match_fraction,
+                )
+            )
+
+        if self._iso_rmse is None:
+            return self._reindex(np.zeros(len(self), dtype=bool))
+        mask = (
+            (self._iso_rmse <= max_match_rmse)
+            & (self._iso_match_frac >= min_match_fraction)
+        )
+        return self._filter_by_mask(mask)
+
+    def _filter_by_octet_rule(self) -> '_LazyBackend':
+        if self._rust_result is not None:
+            return self._with_rust_result(
+                self._rust_result.filter_by_octet(self._charge)
+            )
+
+        filtered_indices = [
+            idx for idx in range(len(self))
+            if passes_octet_rule(self._materialize(idx).formula)
+        ]
+        return self._reindex(np.asarray(filtered_indices, dtype=np.intp))
 
     def _slice(self, s: slice) -> '_LazyBackend':
         """
@@ -219,6 +591,21 @@ class _LazyBackend:
         Return a new _LazyBackend filtered by boolean mask
         """
         return self._reindex(mask)
+
+    def _render_table(self, max_rows: Optional[int]) -> str | None:
+        if self._rust_result is None or self._cache:
+            return None
+        rust_max_rows = None if max_rows is None else int(max_rows)
+        return _render_raw_table(
+            self._rust_result.table_rows(rust_max_rows),
+            max_rows=max_rows,
+            total=len(self),
+        )
+
+    def _to_dataframe(self) -> 'pd.DataFrame | None':
+        if self._rust_result is None or self._cache:
+            return None
+        return _render_raw_dataframe(self._rust_result.table_rows(None))
 
 
 @dataclass
@@ -323,7 +710,7 @@ class FormulaSearchResults:
         """
         Text summary and top candidates
         """
-        n_results = len(self.candidates)
+        n_results = len(self)
         summary = self._summary_line(n_results)
 
         if n_results == 0:
@@ -367,13 +754,22 @@ class FormulaSearchResults:
         Returns:
             Formatted string table
         """
-        candidates_to_show = self.candidates[:max_rows] \
-            if max_rows is not None else self.candidates
+        if self._backend is not None:
+            table = self._backend._render_table(max_rows)
+            if table is not None:
+                return table
+
+        n_results = len(self)
+        if max_rows is None:
+            indices = range(n_results)
+        else:
+            indices = list(range(n_results))[:max_rows]
+        candidates_to_show = [self[idx] for idx in indices]
 
         return render_table(
             candidates_to_show,
             max_rows=max_rows,
-            total=len(self.candidates)
+            total=n_results,
         )
         #
         # n = len(self)
@@ -442,7 +838,11 @@ class FormulaSearchResults:
         Raises:
             ImportError: If pandas is not installed
         """
-        return render_dataframe(self.candidates)
+        if self._backend is not None:
+            dataframe = self._backend._to_dataframe()
+            if dataframe is not None:
+                return dataframe
+        return render_dataframe(list(self))
         # try:
         #     import pandas as pd
         # except ImportError:
@@ -504,16 +904,13 @@ class FormulaSearchResults:
         Returns:
             New FormulaSearchResults with sorted candidates
         """
-        # if self._backend is not None:
-        #     b = self._backend
-        #     order = np.argsort(np.abs(b._error_da))
-        #     if reverse:
-        #         order = order[::-1]
-        #     new_backend = b._reindex(order)
-        #     return FormulaSearchResults(
-        #         candidates=[], query_mass=self.query_mass,
-        #         query_params=self.query_params, _backend=new_backend,
-        #     )
+        if self._backend is not None:
+            return FormulaSearchResults(
+                candidates=[],
+                query_mass=self.query_mass,
+                query_params=self.query_params,
+                _backend=self._backend._sort_by_error(reverse),
+            )
 
         return FormulaSearchResults(
             candidates=sorted(self.candidates, reverse=reverse),
@@ -536,20 +933,14 @@ class FormulaSearchResults:
         Returns:
             New FormulaSearchResults with sorted candidates
         """
-        # if self._backend is not None:
-        #     b = self._backend
-        #     if b._iso_rmse is None:
-        #         # No isotope data — sorting by RMSE is a no-op
-        #         return self
-        #     order = np.argsort(b._iso_rmse)
-        #     if reverse:
-        #         order = order[::-1]
-        #     new_backend = b._reindex(order)
-        #     return FormulaSearchResults(
-        #         candidates=[], query_mass=self.query_mass,
-        #         query_params=self.query_params, _backend=new_backend,
-        #     )
-        #
+        if self._backend is not None:
+            return FormulaSearchResults(
+                candidates=[],
+                query_mass=self.query_mass,
+                query_params=self.query_params,
+                _backend=self._backend._sort_by_rmse(reverse),
+            )
+
         with_iso = [c for c in self.candidates if c.isotope_match_result is not None]
         without_iso = [c for c in self.candidates if c.isotope_match_result is None]
 
@@ -581,6 +972,16 @@ class FormulaSearchResults:
         Returns:
             New FormulaSearchResults with sorted candidates
         """
+        if self._backend is not None:
+            new_backend = self._backend._sort_by_prior(reverse)
+            if new_backend is not None:
+                return FormulaSearchResults(
+                    candidates=[],
+                    query_mass=self.query_mass,
+                    query_params=self.query_params,
+                    _backend=new_backend,
+                )
+
         with_score = [c for c in self.candidates if c.prior_score is not None]
         without_score = [c for c in self.candidates if c.prior_score is None]
 
@@ -612,6 +1013,16 @@ class FormulaSearchResults:
         Returns:
             New FormulaSearchResults with sorted candidates
         """
+        if self._backend is not None:
+            new_backend = self._backend._sort_by_posterior(reverse)
+            if new_backend is not None:
+                return FormulaSearchResults(
+                    candidates=[],
+                    query_mass=self.query_mass,
+                    query_params=self.query_params,
+                    _backend=new_backend,
+                )
+
         with_score = [c for c in self.candidates if c.posterior_score is not None]
         without_score = [c for c in self.candidates if c.posterior_score is None]
 
@@ -645,14 +1056,7 @@ class FormulaSearchResults:
         """
         if self._backend is not None:
             b = self._backend
-            if b._rdbe is None:
-                # No RDBE data — cannot filter, return empty
-                return FormulaSearchResults(
-                    candidates=[], query_mass=self.query_mass,
-                    query_params={**self.query_params, 'filter_rdbe': (min_rdbe, max_rdbe)},
-                )
-            mask = (b._rdbe >= min_rdbe) & (b._rdbe <= max_rdbe)
-            new_backend = b._filter_by_mask(mask)
+            new_backend = b._filter_by_rdbe_range(min_rdbe, max_rdbe)
             return FormulaSearchResults(
                 candidates=[], query_mass=self.query_mass,
                 query_params={**self.query_params, 'filter_rdbe': (min_rdbe, max_rdbe)},
@@ -680,7 +1084,17 @@ class FormulaSearchResults:
         Returns:
             New FormulaSearchResults with filtered candidates
         """
-        # Octet filtering requires materializing formulas
+        if self._backend is not None:
+            return FormulaSearchResults(
+                candidates=[],
+                query_mass=self.query_mass,
+                query_params={
+                    **self.query_params,
+                    'check_octet': True,
+                },
+                _backend=self._backend._filter_by_octet_rule(),
+            )
+
         filtered = [
             c for c in self
             if passes_octet_rule(c.formula)
@@ -722,12 +1136,7 @@ class FormulaSearchResults:
 
         if self._backend is not None:
             b = self._backend
-            mask = np.ones(len(b), dtype=bool)
-            if max_ppm is not None:
-                mask &= np.abs(b._error_ppm) <= max_ppm
-            if max_da is not None:
-                mask &= np.abs(b._error_da) <= max_da
-            new_backend = b._filter_by_mask(mask)
+            new_backend = b._filter_by_error_limits(max_ppm, max_da)
             return FormulaSearchResults(
                 candidates=[], query_mass=self.query_mass,
                 query_params={
@@ -784,10 +1193,12 @@ class FormulaSearchResults:
             ValueError: If neither parameter is specified or if candidates
                 don't have isotope match results
         """
-        if self._backend is not None and self._backend._iso_rmse is not None:
+        if self._backend is not None:
             b = self._backend
-            mask = (b._iso_rmse <= max_match_rmse) & (b._iso_match_frac >= min_match_fraction)
-            new_backend = b._filter_by_mask(mask)
+            new_backend = b._filter_by_isotope_quality_limits(
+                max_match_rmse,
+                min_match_fraction,
+            )
             return FormulaSearchResults(
                 candidates=[], query_mass=self.query_mass,
                 query_params={

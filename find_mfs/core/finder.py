@@ -97,6 +97,7 @@ class FormulaFinder:
         self,
         elements: Iterable[str] = 'CHNOPS',
         use_precalculated: bool = True,
+        backend: str = "python",
     ):
         """
         Initialize FormulaFinder with a set of elements.
@@ -111,16 +112,50 @@ class FormulaFinder:
                 Note: currently, they are only available for CHNOPS and
                 CHNOPS + Halogens
                 Default is True.
-        """
-        self.decomposer = MassDecomposer(
-            elements=elements,
-            use_precalculated=use_precalculated,
-        )
-        self.validator = FormulaValidator()
 
-        # Cache per-element-set constants reused on every query.
-        self._symbols: list[str] = list(self.decomposer.element_symbols)
-        self._has_known_bond_e: bool = all(s in BOND_ELECTRONS for s in self._symbols)
+            backend: Execution backend for searches. ``"python"`` keeps the
+                existing Python/Cython implementation. ``"rust"`` opts into
+                the private ``find_mfs._rust`` extension.
+                Default is "python".
+        """
+        self.backend = self._validate_backend(backend)
+        self._elements_input = elements
+        self._use_precalculated = use_precalculated
+        self._decomposer = None
+        self._rust_finder = None
+        self.validator = FormulaValidator()
+        self._symbols: list[str] = []
+        self._has_known_bond_e: bool = False
+        self._unknown_bond_e_indices: np.ndarray = np.array([], dtype=np.intp)
+        self._rdbe_coeffs_fallback = np.array([], dtype=np.float64)
+        self._rdbe_coeffs = None
+        self._iso_m1_coeffs = np.array([], dtype=np.float64)
+        self._iso_m2_direct_coeffs = np.array([], dtype=np.float64)
+
+        if self.backend == "python":
+            self._ensure_decomposer()
+
+    @property
+    def decomposer(self) -> MassDecomposer:
+        return self._ensure_decomposer()
+
+    def _ensure_decomposer(self) -> MassDecomposer:
+        if self._decomposer is None:
+            self._decomposer = MassDecomposer(
+                elements=self._elements_input,
+                use_precalculated=self._use_precalculated,
+            )
+            self._init_decomposer_caches()
+        return self._decomposer
+
+    def _init_decomposer_caches(self) -> None:
+        decomposer = self._decomposer
+        if decomposer is None:
+            return
+
+        # Cache per-element-set constants reused on every Python-backend query.
+        self._symbols = list(decomposer.element_symbols)
+        self._has_known_bond_e = all(s in BOND_ELECTRONS for s in self._symbols)
         self._unknown_bond_e_indices: np.ndarray = np.array(
             [i for i, sym in enumerate(self._symbols) if sym not in BOND_ELECTRONS],
             dtype=np.intp,
@@ -144,6 +179,20 @@ class FormulaFinder:
             [get_m2_direct(s) for s in self._symbols],
             dtype=np.float64,
         )
+
+    def _get_rust_finder(self):
+        if self._rust_finder is None:
+            from .rust_backend import RustFormulaFinder
+            self._rust_finder = RustFormulaFinder.from_elements(self._elements_input)
+        return self._rust_finder
+
+    @staticmethod
+    def _validate_backend(backend: str) -> str:
+        if backend not in {"python", "rust"}:
+            raise ValueError(
+                f"Unknown backend {backend!r}. Expected 'python' or 'rust'."
+            )
+        return backend
 
     @staticmethod
     def _parse_adduct(
@@ -192,6 +241,7 @@ class FormulaFinder:
         filter_rdbe: Optional[tuple[float, float]] = None,
         check_octet: bool = False,
         isotope_match: Optional['IsotopeMatchConfig'] = None,
+        backend: Optional[str] = None,
     ) -> 'FormulaSearchResults':
         """
         Find molecular formula candidates for a given mass.
@@ -261,6 +311,10 @@ class FormulaFinder:
                 pattern. Requires IsoSpecPy to be installed.
                 Default: None (no isotope matching)
 
+            backend: Optional per-call backend override. Use ``"python"`` for
+                the existing implementation or ``"rust"`` for the private
+                PyO3 extension. Defaults to this finder's configured backend.
+
         Returns:
             FormulaSearchResults object containing candidates sorted by mass
             error (smallest first). Supports iteration, indexing, filtering,
@@ -327,165 +381,178 @@ class FormulaFinder:
             >>>     isotope_match=iso_config
             >>> )
         """
-
-        # Parse adduct if provided
-        adduct_formula = None
-        adduct_mass = 0.0
-        if adduct:
-            adduct_formula, adduct_mass = self._parse_adduct(adduct)
-        adduct_sign = -1 if adduct is not None and adduct.startswith('-') else 1
-
-        # Convert min_counts and max_counts into dicts, depending on user input
-        # i.e. they might be strings
-        min_counts_dict: dict[str, int] | None = None
-        if isinstance(min_counts, dict):
-            min_counts_dict = min_counts
-        elif min_counts is not None:
-            min_counts_dict = to_bounds_dict(
-                min_counts,
-                elements=[x.symbol for x in self.decomposer.elements]
-            )
-
-        max_counts_dict: dict[str, int] | None = None
-        if isinstance(max_counts, dict):
-            max_counts_dict = max_counts
-        elif max_counts is not None:
-            max_counts_dict = to_bounds_dict(
-                max_counts,
-                elements=[x.symbol for x in self.decomposer.elements]
-            )
-
-        # Adjust mass for adduct: decompose the neutral molecule mass
-        adjusted_mass = mass - adduct_mass
-
-        # Pre-filter on counts before constructing expensive Formula objects.
-        # The decomposition always operates on the core molecule (adduct mass
-        # subtracted), so RDBE/octet filtering applies to the core molecule's
-        # element counts regardless of whether an adduct is specified.
-        symbols = self._symbols
-        can_prefilter: bool = (
-            (filter_rdbe is not None or check_octet)
-            and self._has_known_bond_e
+        active_backend = (
+            self.backend if backend is None else self._validate_backend(backend)
         )
+        rust_finder = self._get_rust_finder() if active_backend == "rust" else None
+        adduct_present = bool(adduct)
+        adduct_mass_signed = 0.0
+        adduct_elements = {}
 
-        # Prepare RDBE coefficients:
-        # - full known set: safe for in-kernel pre-filtering and candidate RDBE
-        # - partial known set: used only for residual post-filtering path
-        rdbe_coeffs = None
-        unknown_symbol_indices = None
-        if self._has_known_bond_e:
-            rdbe_coeffs = self._rdbe_coeffs
-        elif filter_rdbe is not None or check_octet:
-            rdbe_coeffs = self._rdbe_coeffs_fallback
-            unknown_symbol_indices = self._unknown_bond_e_indices
-
-        # Always pass RDBE coefficients so RDBE is computed for every candidate.
-        # When pre-filtering is possible, also push RDBE range + octet checks
-        # into the Cython decomposition kernel.
-        # The octet check needs the *core molecule's* charge parity:
-        #   - With adduct: adduct carries the charge; core is neutral (even parity)
-        #   - Without adduct: charge is on the molecule itself
-        decompose_kwargs = {}
-        if rdbe_coeffs is not None:
-            decompose_kwargs['rdbe_coeffs'] = rdbe_coeffs
-        if can_prefilter:
-            rdbe_min = filter_rdbe[0] if filter_rdbe is not None else -np.inf
-            rdbe_max = filter_rdbe[1] if filter_rdbe is not None else np.inf
-            core_charge_parity_even = True if adduct is not None else None
-            decompose_kwargs.update({
-                'rdbe_min': float(rdbe_min),
-                'rdbe_max': float(rdbe_max),
-                'check_octet': check_octet,
-                'charge_parity_even': core_charge_parity_even,
-            })
-
-        # Isotope pre-filter: extract M+1/M+2 ratios from observed envelope
-        if (
-            isotope_match is not None
-            and isotope_match.enable_approx_prefilter
-            and self._iso_m1_coeffs is not None
-        ):
-            obs_env = isotope_match.envelope
-            # Use lowest-mass peak as the monoisotopic reference,
-            # since the base peak (tallest) may not be M+0 for
-            # large molecules.
-            mono_idx = np.argmin(obs_env[:, 0])
-            mono_mz = obs_env[mono_idx, 0]
-            mono_intsy = obs_env[mono_idx, 1]
-
-            # Find M+1 and M+2 peaks relative to monoisotopic
-            obs_m1_ratio = 0.0
-            obs_m2_ratio = 0.0
-            for i in range(obs_env.shape[0]):
-                delta = obs_env[i, 0] - mono_mz
-                if 0.9 <= delta <= 1.1:
-                    obs_m1_ratio = obs_env[i, 1] / mono_intsy
-                elif 1.9 <= delta <= 2.1:
-                    obs_m2_ratio = obs_env[i, 1] / mono_intsy
-
-            if obs_m1_ratio > 0.0:
-                decompose_kwargs['iso_m1_coeffs'] = self._iso_m1_coeffs
-                decompose_kwargs['iso_m2_direct_coeffs'] = self._iso_m2_direct_coeffs
-                decompose_kwargs['obs_m1_ratio'] = obs_m1_ratio
-                decompose_kwargs['obs_m2_ratio'] = obs_m2_ratio
-                decompose_kwargs['iso_tol_rel'] = isotope_match.approx_tolerance_rel
-                decompose_kwargs['iso_tol_abs'] = isotope_match.approx_tolerance_abs
-
-        # Fused decomposition + scoring + optional isotope matching:
-        # all in one Cython pipeline call.
-        # NOTE: adduct_mass from _parse_adduct() is signed:
-        #   - "Na" -> +Na mass
-        #   - "-H" -> -H mass
-        # This signed mass must be used consistently for exact-mass scoring.
-        adduct_mass_signed = adduct_mass
-
-        if can_prefilter:
-            remaining_filter_rdbe = None
-            remaining_check_octet = False
+        if active_backend == "rust":
+            raw, symbols, adduct_mass_signed, adduct_elements = rust_finder.find_formulae_raw(
+                mass=mass,
+                charge=charge,
+                ppm_error=error_ppm,
+                mz_error=error_da,
+                min_counts=min_counts,
+                max_counts=max_counts,
+                max_results=max_results,
+                filter_rdbe=filter_rdbe,
+                check_octet=check_octet,
+                adduct=adduct,
+                isotope_match=isotope_match,
+            )
         else:
-            remaining_filter_rdbe = filter_rdbe
-            remaining_check_octet = check_octet
+            decomposer = self.decomposer
+            # Parse adduct if provided. The Python backend keeps the original
+            # molmass parsing path for parity with the existing implementation.
+            adduct_formula = None
+            adduct_mass = 0.0
+            if adduct:
+                adduct_formula, adduct_mass = self._parse_adduct(adduct)
+            adduct_sign = -1 if adduct is not None and adduct.startswith('-') else 1
+            if adduct_formula is not None:
+                for sym, item in adduct_formula.composition().items():
+                    if sym == '' or sym == 'e-':
+                        continue
+                    if item.count > 0:
+                        adduct_elements[sym] = adduct_sign * item.count
 
-        raw, symbols = self.decomposer.decompose_and_score(
-            query_mass=adjusted_mass,
-            charge=charge,
-            ppm_error=error_ppm,
-            mz_error=error_da,
-            min_counts=min_counts_dict,
-            max_counts=max_counts_dict,
-            max_results=max_results,
-            ion_query_mass=mass,
-            adduct_mass=adduct_mass_signed,
-            **decompose_kwargs,
-        )
+            # Convert min_counts and max_counts into dicts, depending on user
+            # input. String constraints remain Python-owned only for the
+            # Python/Cython backend.
+            min_counts_for_backend: dict[str, int] | str | None = None
+            max_counts_for_backend: dict[str, int] | str | None = None
+            if isinstance(min_counts, dict):
+                min_counts_for_backend = min_counts
+            elif min_counts is not None:
+                min_counts_for_backend = to_bounds_dict(
+                    min_counts,
+                    elements=[x.symbol for x in decomposer.elements]
+                )
 
-        # Signed adduct element offsets are needed for adduct-aware logic:
-        # - isotope matching on ion composition (core + adduct)
-        # - residual octet parity (core is neutral when adduct is present)
-        adduct_elements: dict[str, int] = {}
-        if adduct_formula is not None:
-            for sym, item in adduct_formula.composition().items():
-                if sym == '' or sym == 'e-':
-                    continue
-                if item.count > 0:
-                    adduct_elements[sym] = adduct_sign * item.count
+            if isinstance(max_counts, dict):
+                max_counts_for_backend = max_counts
+            elif max_counts is not None:
+                max_counts_for_backend = to_bounds_dict(
+                    max_counts,
+                    elements=[x.symbol for x in decomposer.elements]
+                )
 
-        # Compiled post-processing pipeline:
-        # - residual rdbe/octet validation
-        # - isotope matching + rmse cutoff
-        from ._pipeline import run_query_pipeline
-        raw = run_query_pipeline(
-            raw=raw,
-            core_symbols=symbols,
-            charge=charge,
-            query_mass=mass,
-            remaining_filter_rdbe=remaining_filter_rdbe,
-            remaining_check_octet=remaining_check_octet,
-            isotope_match=isotope_match,
-            adduct_elements=adduct_elements if adduct_elements else None,
-            adduct_present=adduct_formula is not None,
-            unknown_symbol_indices=unknown_symbol_indices,
-        )
+            # Fused decomposition + scoring + optional isotope matching:
+            # all in one Cython pipeline call. adduct_mass is signed:
+            #   - "Na" -> +Na mass
+            #   - "-H" -> -H mass
+            adduct_mass_signed = adduct_mass
+            adjusted_mass = mass - adduct_mass_signed
+
+            # Pre-filter on counts before constructing expensive Formula objects.
+            # The decomposition always operates on the core molecule (adduct mass
+            # subtracted), so RDBE/octet filtering applies to the core molecule's
+            # element counts regardless of whether an adduct is specified.
+            can_prefilter: bool = (
+                (filter_rdbe is not None or check_octet)
+                and self._has_known_bond_e
+            )
+
+            # Prepare RDBE coefficients:
+            # - full known set: safe for in-kernel pre-filtering and candidate RDBE
+            # - partial known set: used only for residual post-filtering path
+            rdbe_coeffs = None
+            unknown_symbol_indices = None
+            if self._has_known_bond_e:
+                rdbe_coeffs = self._rdbe_coeffs
+            elif filter_rdbe is not None or check_octet:
+                rdbe_coeffs = self._rdbe_coeffs_fallback
+                unknown_symbol_indices = self._unknown_bond_e_indices
+
+            # Always pass RDBE coefficients so RDBE is computed for every
+            # candidate. When pre-filtering is possible, also push RDBE range +
+            # octet checks into the Cython decomposition kernel.
+            decompose_kwargs = {}
+            if rdbe_coeffs is not None:
+                decompose_kwargs['rdbe_coeffs'] = rdbe_coeffs
+            if can_prefilter:
+                rdbe_min = filter_rdbe[0] if filter_rdbe is not None else -np.inf
+                rdbe_max = filter_rdbe[1] if filter_rdbe is not None else np.inf
+                core_charge_parity_even = True if adduct_present else None
+                decompose_kwargs.update({
+                    'rdbe_min': float(rdbe_min),
+                    'rdbe_max': float(rdbe_max),
+                    'check_octet': check_octet,
+                    'charge_parity_even': core_charge_parity_even,
+                })
+
+            # Isotope pre-filter: extract M+1/M+2 ratios from observed envelope.
+            if (
+                isotope_match is not None
+                and isotope_match.enable_approx_prefilter
+                and self._iso_m1_coeffs is not None
+            ):
+                obs_env = isotope_match.envelope
+                mono_idx = np.argmin(obs_env[:, 0])
+                mono_mz = obs_env[mono_idx, 0]
+                mono_intsy = obs_env[mono_idx, 1]
+
+                obs_m1_ratio = 0.0
+                obs_m2_ratio = 0.0
+                for i in range(obs_env.shape[0]):
+                    delta = obs_env[i, 0] - mono_mz
+                    if 0.9 <= delta <= 1.1:
+                        obs_m1_ratio = obs_env[i, 1] / mono_intsy
+                    elif 1.9 <= delta <= 2.1:
+                        obs_m2_ratio = obs_env[i, 1] / mono_intsy
+
+                if obs_m1_ratio > 0.0:
+                    decompose_kwargs['iso_m1_coeffs'] = self._iso_m1_coeffs
+                    decompose_kwargs['iso_m2_direct_coeffs'] = (
+                        self._iso_m2_direct_coeffs
+                    )
+                    decompose_kwargs['obs_m1_ratio'] = obs_m1_ratio
+                    decompose_kwargs['obs_m2_ratio'] = obs_m2_ratio
+                    decompose_kwargs['iso_tol_rel'] = (
+                        isotope_match.approx_tolerance_rel
+                    )
+                    decompose_kwargs['iso_tol_abs'] = (
+                        isotope_match.approx_tolerance_abs
+                    )
+
+            if can_prefilter:
+                remaining_filter_rdbe = None
+                remaining_check_octet = False
+            else:
+                remaining_filter_rdbe = filter_rdbe
+                remaining_check_octet = check_octet
+
+            raw, symbols = decomposer.decompose_and_score(
+                query_mass=adjusted_mass,
+                charge=charge,
+                ppm_error=error_ppm,
+                mz_error=error_da,
+                min_counts=min_counts_for_backend,
+                max_counts=max_counts_for_backend,
+                max_results=max_results,
+                ion_query_mass=mass,
+                adduct_mass=adduct_mass_signed,
+                **decompose_kwargs,
+            )
+            # Compiled post-processing pipeline:
+            # - residual rdbe/octet validation
+            # - isotope matching + rmse cutoff
+            from ._pipeline import run_query_pipeline
+            raw = run_query_pipeline(
+                raw=raw,
+                core_symbols=symbols,
+                charge=charge,
+                query_mass=mass,
+                remaining_filter_rdbe=remaining_filter_rdbe,
+                remaining_check_octet=remaining_check_octet,
+                isotope_match=isotope_match,
+                adduct_elements=adduct_elements if adduct_elements else None,
+                adduct_present=adduct_present,
+                unknown_symbol_indices=unknown_symbol_indices,
+            )
 
         # Store query parameters for reference
         query_params = {
@@ -500,16 +567,27 @@ class FormulaFinder:
             'filter_rdbe': filter_rdbe,
             'check_octet': check_octet,
             'isotope_match': isotope_match,
+            'backend': active_backend,
         }
 
         from .results import FormulaSearchResults, _LazyBackend
 
-        charge_mass_offset = ELECTRON.mass * charge if adduct_formula is not None else 0.0
-        n_obs = isotope_match.envelope.shape[0] if isotope_match is not None else 0
+        charge_mass_offset = ELECTRON.mass * charge if adduct_present else 0.0
+        if isotope_match is None:
+            n_obs = 0
+        elif active_backend == "rust":
+            rust_result = raw.get("rust_result")
+            if rust_result is not None:
+                n_obs = int(rust_result.n_observed())
+            else:
+                peak_matches = raw.get("iso_peak_matches")
+                n_obs = 0 if peak_matches is None else int(peak_matches.shape[1])
+        else:
+            n_obs = isotope_match.envelope.shape[0]
         backend = _LazyBackend(
             raw=raw,
             symbols=symbols,
-            charge=charge if adduct_formula is None else 0,
+            charge=charge if not adduct_present else 0,
             ion_charge=charge,
             adduct=adduct,
             adduct_elements=adduct_elements if adduct_elements else None,
@@ -524,6 +602,7 @@ class FormulaFinder:
                 isotope_match.simulated_intensity_threshold
                 if isotope_match is not None else None
             ),
+            isotope_envelope_backend=rust_finder if active_backend == "rust" else None,
         )
 
         return FormulaSearchResults(
