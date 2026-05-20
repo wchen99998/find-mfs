@@ -205,7 +205,10 @@ impl PyRustQueryResult {
         if let Some(formula_strings) = self.output.formula_strings.as_ref() {
             return formula_strings[idx].clone();
         }
-        let counts: Vec<i64> = self.output.counts.row(idx)
+        let counts: Vec<i64> = self
+            .output
+            .counts
+            .row(idx)
             .iter()
             .map(|count| *count as i64)
             .collect();

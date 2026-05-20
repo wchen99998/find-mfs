@@ -660,6 +660,37 @@ def test_rust_backend_reuses_stored_finder_state():
     assert finder._rust_finder is rust_finder
 
 
+def test_rust_negative_max_results_raises_value_error_like_python():
+    config = {
+        "mass": 180.063,
+        "error_da": 0.01,
+        "max_results": -1,
+    }
+
+    with pytest.raises(ValueError):
+        FormulaFinder("CHNOPS", backend="python").find_formulae(**config)
+
+    with pytest.raises(ValueError, match="max_results must be non-negative"):
+        FormulaFinder("CHNOPS", backend="rust").find_formulae(**config)
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"mass": 180.063, "error_ppm": float("nan"), "error_da": 0.01},
+        {"mass": float("inf"), "error_da": 0.01},
+    ],
+)
+def test_rust_nonfinite_mass_window_matches_python_empty_results(config: dict):
+    config = {**config, "max_results": 10}
+
+    py_results = FormulaFinder("CHNOPS", backend="python").find_formulae(**config)
+    rust_results = FormulaFinder("CHNOPS", backend="rust").find_formulae(**config)
+
+    assert len(py_results) == 0
+    assert len(rust_results) == 0
+
+
 @pytest.mark.parametrize(
     ("formula", "symbols", "expected_counts", "expected_formatted"),
     [

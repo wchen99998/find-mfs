@@ -11,7 +11,7 @@ use crate::static_data;
 #[derive(Clone)]
 pub struct StoredFormulaFinder {
     pub element_symbols: Vec<String>,
-    pub ert: Arc<Vec<f64>>,
+    pub ert: Arc<Vec<i64>>,
     pub integer_masses: Arc<Vec<i64>>,
     pub real_masses: Arc<Vec<f64>>,
     pub precision: f64,
@@ -299,7 +299,13 @@ impl StoredFormulaFinder {
                     row.len()
                 ));
             }
-            flat_ert.extend_from_slice(row);
+            flat_ert.extend(row.iter().map(|value| {
+                if value.is_infinite() && value.is_sign_positive() {
+                    i64::MAX
+                } else {
+                    *value as i64
+                }
+            }));
         }
         if element_mass_symbols.len() != element_mass_values.len() {
             return Err("element mass symbol/value arrays must have the same length".to_string());
@@ -1154,7 +1160,12 @@ impl StoredFormulaFinder {
         mz_error: f64,
         min_counts: Option<&[i64]>,
     ) -> (f64, f64) {
-        let error = (mass * ppm_error / 1e6).max(mz_error);
+        let ppm_component = mass * ppm_error / 1e6;
+        let error = if mz_error > ppm_component {
+            mz_error
+        } else {
+            ppm_component
+        };
         let mut min_mass = mass - error;
         let mut max_mass = mass + error;
 
@@ -1299,7 +1310,7 @@ mod tests {
         assert_eq!(finder.element_symbols, vec!["A", "B"]);
         assert_eq!(*finder.integer_masses, vec![1, 2]);
         assert_eq!(*finder.real_masses, vec![1.0, 2.0]);
-        assert_eq!(*finder.ert, vec![0.0, 0.0]);
+        assert_eq!(*finder.ert, vec![0, 0]);
     }
 
     #[test]
@@ -1468,6 +1479,31 @@ mod tests {
         assert_eq!(input.min_int, 4);
         assert_eq!(input.max_int, 4);
         assert_eq!(input.bounds, vec![4.0, 2.0]);
+    }
+
+    #[test]
+    fn mass_range_matches_python_nan_max_semantics() {
+        let finder = finder();
+
+        let (min_mass, max_mass) = finder.mass_range(5.0, f64::NAN, 0.1, None);
+        assert!(min_mass.is_nan());
+        assert!(max_mass.is_nan());
+        assert_eq!(
+            finder
+                .mass_range_as_integers(0.0_f64.max(min_mass), 0.0_f64.max(max_mass))
+                .unwrap(),
+            (0, 0)
+        );
+
+        let (min_mass, max_mass) = finder.mass_range(f64::INFINITY, 0.0, 0.1, None);
+        assert!(min_mass.is_nan());
+        assert!(max_mass.is_nan());
+        assert_eq!(
+            finder
+                .mass_range_as_integers(0.0_f64.max(min_mass), 0.0_f64.max(max_mass))
+                .unwrap(),
+            (0, 0)
+        );
     }
 
     #[test]

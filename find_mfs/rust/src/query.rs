@@ -259,7 +259,7 @@ mod tests {
 
     fn empty_decompose_input() -> DecomposeInput {
         DecomposeInput {
-            ert: std::sync::Arc::new(vec![0.0]),
+            ert: std::sync::Arc::new(vec![0]),
             integer_masses: std::sync::Arc::new(vec![1]),
             real_masses: std::sync::Arc::new(vec![1.0]),
             bounds: vec![f64::INFINITY],
