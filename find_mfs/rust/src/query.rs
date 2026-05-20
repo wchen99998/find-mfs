@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
-use crate::decomposer::{self, DecomposeInput, DecomposeOutput};
+use crate::decomposer::{self, CountTable, DecomposeInput, DecomposeOutput};
 use crate::filters;
+#[cfg(test)]
 use crate::formula;
 use crate::isospec_ffi::{self, IsotopeScoreOutput, IsotopeScoringInput};
 
@@ -13,6 +14,7 @@ pub struct FindFormulaeInput {
     pub remaining_rdbe_min: f64,
     pub remaining_rdbe_max: f64,
     pub remaining_check_octet: bool,
+    pub can_compute_rdbe: bool,
     pub adduct_present: bool,
     pub adduct_symbols: Vec<String>,
     pub adduct_counts: Vec<i32>,
@@ -28,7 +30,10 @@ pub struct IsotopeQueryInput {
 
 #[derive(Clone)]
 pub struct FindFormulaeOutput {
-    pub counts: Vec<Vec<i32>>,
+    pub core_symbols: Vec<String>,
+    pub formula_charge: i32,
+    pub rdbe_coeffs: Vec<f64>,
+    pub counts: CountTable,
     pub exact_masses: Vec<f64>,
     pub error_ppm: Vec<f64>,
     pub error_da: Vec<f64>,
@@ -37,10 +42,15 @@ pub struct FindFormulaeOutput {
     pub iso_match_frac: Option<Vec<f64>>,
     pub iso_n_matched: Option<Vec<i32>>,
     pub iso_peak_matches: Option<Vec<Vec<i8>>>,
-    pub formula_strings: Vec<String>,
+    pub formula_strings: Option<Vec<String>>,
 }
 
 pub fn find_formulae(input: FindFormulaeInput) -> Result<FindFormulaeOutput, String> {
+    let rdbe_coeffs = if input.can_compute_rdbe {
+        input.decompose.rdbe_coeffs.clone()
+    } else {
+        Vec::new()
+    };
     let mut raw = decomposer::decompose_and_score(&input.decompose)?;
 
     apply_residual_filters(&mut raw, &input)?;
@@ -50,16 +60,17 @@ pub fn find_formulae(input: FindFormulaeInput) -> Result<FindFormulaeOutput, Str
         isotope_output = Some(apply_isotope_filter(&mut raw, &input, isotope)?);
     }
 
+    let formula_charge = if input.adduct_present {
+        0
+    } else {
+        input.charge
+    };
+
     Ok(FindFormulaeOutput {
-        formula_strings: format_core_formula_strings(
-            &input.core_symbols,
-            &raw.counts,
-            if input.adduct_present {
-                0
-            } else {
-                input.charge
-            },
-        ),
+        core_symbols: input.core_symbols,
+        formula_charge,
+        rdbe_coeffs,
+        formula_strings: None,
         counts: raw.counts,
         exact_masses: raw.exact_masses,
         error_ppm: raw.error_ppm,
@@ -74,6 +85,7 @@ pub fn find_formulae(input: FindFormulaeInput) -> Result<FindFormulaeOutput, Str
     })
 }
 
+#[cfg(test)]
 fn format_core_formula_strings(
     core_symbols: &[String],
     counts: &[Vec<i32>],
@@ -113,7 +125,7 @@ fn apply_residual_filters(
     let charge_parity_even = core_charge.abs() % 2 == 0;
     let mut mask = Vec::with_capacity(raw.len());
 
-    for (idx, row) in raw.counts.iter().enumerate() {
+    for (idx, row) in raw.counts.rows().enumerate() {
         let mut keep = true;
         if !input.unknown_symbol_indices.is_empty() {
             keep = input
@@ -229,7 +241,7 @@ fn build_ion_counts(
     }
 
     let mut ion_counts = Vec::with_capacity(raw.counts.len());
-    for core_row in &raw.counts {
+    for core_row in raw.counts.rows() {
         let mut row = offsets.clone();
         for (core_idx, count) in core_row.iter().enumerate() {
             row[core_to_ion[core_idx]] += *count;
@@ -243,11 +255,11 @@ fn build_ion_counts(
 #[cfg(test)]
 mod tests {
     use super::{apply_residual_filters, format_core_formula_strings, FindFormulaeInput};
-    use crate::decomposer::{DecomposeInput, DecomposeOutput};
+    use crate::decomposer::{CountTable, DecomposeInput, DecomposeOutput};
 
     fn empty_decompose_input() -> DecomposeInput {
         DecomposeInput {
-            ert: std::sync::Arc::new(vec![vec![0.0]]),
+            ert: std::sync::Arc::new(vec![0.0]),
             integer_masses: std::sync::Arc::new(vec![1]),
             real_masses: std::sync::Arc::new(vec![1.0]),
             bounds: vec![f64::INFINITY],
@@ -286,6 +298,7 @@ mod tests {
             remaining_rdbe_min: 0.0,
             remaining_rdbe_max: 5.0,
             remaining_check_octet: false,
+            can_compute_rdbe: true,
             adduct_present: false,
             adduct_symbols: Vec::new(),
             adduct_counts: Vec::new(),
@@ -297,7 +310,7 @@ mod tests {
     #[test]
     fn residual_filters_apply_unknown_symbol_and_rdbe_masks() {
         let mut raw = DecomposeOutput {
-            counts: vec![vec![1, 0], vec![1, 1], vec![2, 0]],
+            counts: CountTable::from_rows(vec![vec![1, 0], vec![1, 1], vec![2, 0]]),
             exact_masses: vec![1.0, 2.0, 3.0],
             error_ppm: vec![0.0, 0.0, 0.0],
             error_da: vec![0.0, 0.0, 0.0],
@@ -305,7 +318,7 @@ mod tests {
         };
 
         apply_residual_filters(&mut raw, &input()).unwrap();
-        assert_eq!(raw.counts, vec![vec![1, 0]]);
+        assert_eq!(raw.counts.to_rows(), vec![vec![1, 0]]);
         assert_eq!(raw.exact_masses, vec![1.0]);
     }
 

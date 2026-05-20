@@ -14,6 +14,7 @@ pub fn rdbe_coeff_for_symbol(symbol: &str) -> f64 {
     0.5 * ((electrons - 2) as f64)
 }
 
+#[cfg(test)]
 pub fn rdbe_from_counts_i64(counts: &[i64], rdbe_coeffs: &[f64]) -> f64 {
     let mut rdbe = 1.0;
     for (count, coeff) in counts.iter().zip(rdbe_coeffs.iter()) {

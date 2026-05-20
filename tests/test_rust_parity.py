@@ -581,7 +581,7 @@ def test_rust_backend_materializes_rust_formula_strings(monkeypatch):
         max_results=10,
     )
 
-    assert results._backend._formula_strings == ["C6H12O6"]
+    assert results._backend._formula_strings is None
     assert results[0].formula.formula == "C6H12O6"
     assert seen_formula_strings == ["C6H12O6"]
 

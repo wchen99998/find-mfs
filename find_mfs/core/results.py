@@ -200,7 +200,7 @@ class _LazyBackend:
             self._iso_match_frac = None
             self._iso_n_matched = None
             self._iso_peak_matches = None
-            self._formula_strings = self._rust_result.formula_strings()
+            self._formula_strings = None
         self._symbols = symbols
         self._charge = charge
         self._ion_charge = ion_charge
@@ -512,7 +512,7 @@ class _LazyBackend:
             mass_sigma_ppm,
             isotope_sigma,
         )
-        self._formula_strings = self._rust_result.formula_strings()
+        self._formula_strings = None
         return True
 
     def _filter_by_rdbe_range(

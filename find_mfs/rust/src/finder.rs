@@ -11,7 +11,7 @@ use crate::static_data;
 #[derive(Clone)]
 pub struct StoredFormulaFinder {
     pub element_symbols: Vec<String>,
-    pub ert: Arc<Vec<Vec<f64>>>,
+    pub ert: Arc<Vec<f64>>,
     pub integer_masses: Arc<Vec<i64>>,
     pub real_masses: Arc<Vec<f64>>,
     pub precision: f64,
@@ -291,6 +291,7 @@ impl StoredFormulaFinder {
         if ert.len() != integer_masses[0] as usize {
             return Err("ERT row count must match first integer mass".to_string());
         }
+        let mut flat_ert = Vec::with_capacity(ert.len() * n_elements);
         for (row_idx, row) in ert.iter().enumerate() {
             if row.len() != n_elements {
                 return Err(format!(
@@ -298,6 +299,7 @@ impl StoredFormulaFinder {
                     row.len()
                 ));
             }
+            flat_ert.extend_from_slice(row);
         }
         if element_mass_symbols.len() != element_mass_values.len() {
             return Err("element mass symbol/value arrays must have the same length".to_string());
@@ -338,7 +340,7 @@ impl StoredFormulaFinder {
 
         Ok(Self {
             element_symbols,
-            ert: Arc::new(ert),
+            ert: Arc::new(flat_ert),
             integer_masses: Arc::new(integer_masses),
             real_masses: Arc::new(real_masses),
             precision,
@@ -771,10 +773,11 @@ impl StoredFormulaFinder {
         minimum_rmse: f64,
     ) -> Result<FindFormulaeOutput, String> {
         let has_rdbe_request = apply_rdbe_filter || check_octet;
-        let compute_rdbe = self.has_known_bond_electrons || has_rdbe_request;
+        let can_compute_rdbe = self.has_known_bond_electrons || has_rdbe_request;
         let can_prefilter_rdbe = has_rdbe_request && self.has_known_bond_electrons;
+        let compute_rdbe = has_rdbe_request && !can_prefilter_rdbe;
 
-        let rdbe_coeffs = if compute_rdbe {
+        let rdbe_coeffs = if can_compute_rdbe {
             self.rdbe_coeffs_fallback.clone()
         } else {
             vec![0.0; self.n_elements()]
@@ -851,6 +854,7 @@ impl StoredFormulaFinder {
             ion_query_mass,
             adduct_mass,
             compute_rdbe,
+            can_compute_rdbe,
             electron_mass,
             !can_prefilter_rdbe && apply_rdbe_filter,
             rdbe_min,
@@ -1083,6 +1087,7 @@ impl StoredFormulaFinder {
         ion_query_mass: f64,
         adduct_mass: f64,
         compute_rdbe: bool,
+        can_compute_rdbe: bool,
         electron_mass: f64,
         remaining_apply_rdbe_filter: bool,
         remaining_rdbe_min: f64,
@@ -1129,6 +1134,7 @@ impl StoredFormulaFinder {
             remaining_rdbe_min,
             remaining_rdbe_max,
             remaining_check_octet,
+            can_compute_rdbe,
             adduct_present,
             adduct_symbols,
             adduct_counts,
@@ -1293,7 +1299,7 @@ mod tests {
         assert_eq!(finder.element_symbols, vec!["A", "B"]);
         assert_eq!(*finder.integer_masses, vec![1, 2]);
         assert_eq!(*finder.real_masses, vec![1.0, 2.0]);
-        assert_eq!(*finder.ert, vec![vec![0.0, 0.0]]);
+        assert_eq!(*finder.ert, vec![0.0, 0.0]);
     }
 
     #[test]
@@ -1491,6 +1497,7 @@ mod tests {
                 2.0,
                 0.0,
                 false,
+                false,
                 0.0,
                 false,
                 0.0,
@@ -1504,7 +1511,7 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(output.counts, vec![vec![2, 0], vec![0, 1]]);
+        assert_eq!(output.counts.to_rows(), vec![vec![2, 0], vec![0, 1]]);
     }
 
     #[test]
@@ -1541,7 +1548,7 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(output.output.counts, vec![vec![0, 1]]);
+        assert_eq!(output.output.counts.to_rows(), vec![vec![0, 1]]);
         assert_eq!(output.adduct_mass, 1.0);
         assert_eq!(output.adduct_symbols, vec!["A"]);
         assert_eq!(output.adduct_counts, vec![1]);
@@ -1603,7 +1610,11 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(output.counts, vec![vec![6, 6]]);
-        assert_eq!(output.rdbe, Some(vec![4.0]));
+        assert_eq!(output.counts.to_rows(), vec![vec![6, 6]]);
+        assert_eq!(output.rdbe, None);
+        assert_eq!(
+            crate::chemistry::rdbe_from_counts_i32(output.counts.row(0), &output.rdbe_coeffs),
+            4.0
+        );
     }
 }

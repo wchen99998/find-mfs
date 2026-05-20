@@ -5,6 +5,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict};
 use std::cmp::Ordering;
 
+use crate::chemistry;
 use crate::finder::StoredFormulaFinder;
 use crate::formula;
 use crate::prior::PriorScorer;
@@ -80,7 +81,10 @@ impl PyRustQueryResult {
 
         Ok(Self {
             output: FindFormulaeOutput {
-                counts: take_vec(&self.output.counts, indices),
+                core_symbols: self.output.core_symbols.clone(),
+                formula_charge: self.output.formula_charge,
+                rdbe_coeffs: self.output.rdbe_coeffs.clone(),
+                counts: self.output.counts.take_rows(indices),
                 exact_masses: take_vec(&self.output.exact_masses, indices),
                 error_ppm: take_vec(&self.output.error_ppm, indices),
                 error_da: take_vec(&self.output.error_da, indices),
@@ -109,7 +113,11 @@ impl PyRustQueryResult {
                     .iso_peak_matches
                     .as_ref()
                     .map(|values| take_vec(values, indices)),
-                formula_strings: take_vec(&self.output.formula_strings, indices),
+                formula_strings: self
+                    .output
+                    .formula_strings
+                    .as_ref()
+                    .map(|values| take_vec(values, indices)),
             },
             prior_score: self
                 .prior_score
@@ -153,10 +161,10 @@ impl PyRustQueryResult {
 
     fn display_row(&self, idx: usize, n_observed: usize) -> DisplayRowTuple {
         (
-            self.output.formula_strings[idx].clone(),
+            self.formula_string(idx),
             self.output.error_ppm[idx],
             self.output.error_da[idx],
-            self.output.rdbe.as_ref().map(|values| values[idx]),
+            self.rdbe_value(idx),
             self.output
                 .iso_n_matched
                 .as_ref()
@@ -192,6 +200,34 @@ impl PyRustQueryResult {
             is_half_integer
         }
     }
+
+    fn formula_string(&self, idx: usize) -> String {
+        if let Some(formula_strings) = self.output.formula_strings.as_ref() {
+            return formula_strings[idx].clone();
+        }
+        let counts: Vec<i64> = self.output.counts.row(idx)
+            .iter()
+            .map(|count| *count as i64)
+            .collect();
+        formula::format_formula_from_counts(
+            &self.output.core_symbols,
+            &counts,
+            self.output.formula_charge,
+        )
+    }
+
+    fn rdbe_value(&self, idx: usize) -> Option<f64> {
+        if let Some(rdbe) = self.output.rdbe.as_ref() {
+            return Some(rdbe[idx]);
+        }
+        if self.output.rdbe_coeffs.is_empty() {
+            return None;
+        }
+        Some(chemistry::rdbe_from_counts_i32(
+            self.output.counts.row(idx),
+            &self.output.rdbe_coeffs,
+        ))
+    }
 }
 
 fn take_vec<T: Clone>(values: &[T], indices: &[usize]) -> Vec<T> {
@@ -214,7 +250,12 @@ impl PyRustQueryResult {
     }
 
     fn formula_strings(&self) -> Vec<String> {
-        self.output.formula_strings.clone()
+        if let Some(formula_strings) = self.output.formula_strings.as_ref() {
+            return formula_strings.clone();
+        }
+        (0..self.len_internal())
+            .map(|idx| self.formula_string(idx))
+            .collect()
     }
 
     #[pyo3(signature = (max_rows=None))]
@@ -251,13 +292,13 @@ impl PyRustQueryResult {
         });
 
         Ok((
-            self.output.counts[idx].clone(),
+            self.output.counts.row(idx).to_vec(),
             self.output.exact_masses[idx],
             self.output.error_ppm[idx],
             self.output.error_da[idx],
-            self.output.rdbe.as_ref().map(|values| values[idx]),
+            self.rdbe_value(idx),
             isotope,
-            self.output.formula_strings[idx].clone(),
+            self.formula_string(idx),
         ))
     }
 
@@ -358,7 +399,7 @@ impl PyRustQueryResult {
         mass_sigma_ppm: f64,
         isotope_sigma: f64,
     ) -> PyResult<Self> {
-        if !self.output.counts.is_empty() && core_symbols.len() != self.output.counts[0].len() {
+        if !self.output.counts.is_empty() && core_symbols.len() != self.output.counts.n_cols() {
             return Err(PyValueError::new_err(
                 "core symbol count does not match result count vectors",
             ));
@@ -376,7 +417,7 @@ impl PyRustQueryResult {
 
         let mut prior_scores = Vec::with_capacity(self.len_internal());
         let mut posterior_scores = Vec::with_capacity(self.len_internal());
-        for (idx, counts) in self.output.counts.iter().enumerate() {
+        for (idx, counts) in self.output.counts.rows().enumerate() {
             let prior_score = prior_scorer.score_counts(counts);
             let mut posterior_score = prior_score;
             posterior_score -= self.output.error_ppm[idx].powi(2) / (2.0 * mass_sigma_ppm.powi(2));
@@ -395,12 +436,12 @@ impl PyRustQueryResult {
     }
 
     fn filter_by_rdbe(&self, min_rdbe: f64, max_rdbe: f64) -> PyResult<Self> {
-        let Some(rdbe) = self.output.rdbe.as_ref() else {
-            return self.empty_like();
-        };
-        let mask: Vec<bool> = rdbe
-            .iter()
-            .map(|value| *value >= min_rdbe && *value <= max_rdbe)
+        let mask: Vec<bool> = (0..self.len_internal())
+            .map(|idx| {
+                self.rdbe_value(idx)
+                    .map(|value| value >= min_rdbe && value <= max_rdbe)
+                    .unwrap_or(false)
+            })
             .collect();
         self.from_mask(&mask)
     }
@@ -441,12 +482,12 @@ impl PyRustQueryResult {
     }
 
     fn filter_by_octet(&self, charge: i32) -> PyResult<Self> {
-        let Some(rdbe) = self.output.rdbe.as_ref() else {
-            return self.empty_like();
-        };
-        let mask: Vec<bool> = rdbe
-            .iter()
-            .map(|value| Self::passes_python_octet_rule(*value, charge))
+        let mask: Vec<bool> = (0..self.len_internal())
+            .map(|idx| {
+                self.rdbe_value(idx)
+                    .map(|value| Self::passes_python_octet_rule(value, charge))
+                    .unwrap_or(false)
+            })
             .collect();
         self.from_mask(&mask)
     }

@@ -1,6 +1,8 @@
 use std::cmp::Ordering;
 use std::sync::Arc;
 
+use rayon::prelude::*;
+
 use crate::chemistry;
 use crate::filters;
 use crate::isotope;
@@ -16,7 +18,7 @@ pub struct BuiltDecomposer {
 }
 
 pub struct DecomposeInput {
-    pub ert: Arc<Vec<Vec<f64>>>,
+    pub ert: Arc<Vec<f64>>,
     pub integer_masses: Arc<Vec<i64>>,
     pub real_masses: Arc<Vec<f64>>,
     pub bounds: Vec<f64>,
@@ -185,11 +187,102 @@ fn compute_errors(real_masses: &[f64], integer_masses: &[i64], precision: f64) -
 }
 
 pub struct DecomposeOutput {
-    pub counts: Vec<Vec<i32>>,
+    pub counts: CountTable,
     pub exact_masses: Vec<f64>,
     pub error_ppm: Vec<f64>,
     pub error_da: Vec<f64>,
     pub rdbe: Option<Vec<f64>>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CountTable {
+    data: Vec<i32>,
+    n_cols: usize,
+}
+
+impl CountTable {
+    pub fn empty(n_cols: usize) -> Self {
+        Self {
+            data: Vec::new(),
+            n_cols,
+        }
+    }
+
+    pub fn with_capacity(n_rows: usize, n_cols: usize) -> Self {
+        Self {
+            data: Vec::with_capacity(n_rows.saturating_mul(n_cols)),
+            n_cols,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn from_rows(rows: Vec<Vec<i32>>) -> Self {
+        let n_cols = rows.first().map(|row| row.len()).unwrap_or(0);
+        let mut table = Self::with_capacity(rows.len(), n_cols);
+        for row in rows {
+            assert_eq!(row.len(), n_cols);
+            table.data.extend_from_slice(&row);
+        }
+        table
+    }
+
+    pub fn len(&self) -> usize {
+        if self.n_cols == 0 {
+            0
+        } else {
+            self.data.len() / self.n_cols
+        }
+    }
+
+    pub fn n_cols(&self) -> usize {
+        self.n_cols
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+
+    pub fn row(&self, idx: usize) -> &[i32] {
+        let start = idx * self.n_cols;
+        let end = start + self.n_cols;
+        &self.data[start..end]
+    }
+
+    pub fn rows(&self) -> std::slice::ChunksExact<'_, i32> {
+        self.data.chunks_exact(self.n_cols)
+    }
+
+    pub fn push_count(&mut self, count: i32) {
+        self.data.push(count);
+    }
+
+    pub fn push_row(&mut self, row: &[i32]) {
+        debug_assert_eq!(row.len(), self.n_cols);
+        self.data.extend_from_slice(row);
+    }
+
+    pub fn take_rows(&self, indices: &[usize]) -> Self {
+        let mut out = Self::with_capacity(indices.len(), self.n_cols);
+        for index in indices {
+            out.push_row(self.row(*index));
+        }
+        out
+    }
+
+    pub fn retain_by_mask(&mut self, mask: &[bool]) {
+        let mut out = Vec::with_capacity(mask.iter().filter(|keep| **keep).count() * self.n_cols);
+        for (row, keep) in self.rows().zip(mask.iter()) {
+            if *keep {
+                out.extend_from_slice(row);
+            }
+        }
+        self.data = out;
+    }
+
+    #[cfg(test)]
+    pub fn to_rows(&self) -> Vec<Vec<i32>> {
+        self.rows().map(|row| row.to_vec()).collect()
+    }
 }
 
 impl DecomposeOutput {
@@ -202,7 +295,7 @@ impl DecomposeOutput {
     }
 
     pub fn retain_by_mask(&mut self, mask: &[bool]) {
-        self.counts = retain_vec_by_mask(&self.counts, mask);
+        self.counts.retain_by_mask(mask);
         self.exact_masses = retain_vec_by_mask(&self.exact_masses, mask);
         self.error_ppm = retain_vec_by_mask(&self.error_ppm, mask);
         self.error_da = retain_vec_by_mask(&self.error_da, mask);
@@ -241,22 +334,13 @@ pub fn validate_input(input: &DecomposeInput) -> Result<(), String> {
     if first_mass <= 0 {
         return Err("first integer mass must be positive".to_string());
     }
-    if input.ert.len() != first_mass as usize {
+    if input.ert.len() != (first_mass as usize) * num_elements {
         return Err("ERT row count must match the first integer mass".to_string());
-    }
-    for (row_idx, row) in input.ert.iter().enumerate() {
-        if row.len() != num_elements {
-            return Err(format!(
-                "ERT row {} has length {}, expected {}",
-                row_idx,
-                row.len(),
-                num_elements
-            ));
-        }
     }
     Ok(())
 }
 
+#[inline(always)]
 fn bound_to_i64(bound: f64) -> i64 {
     if bound.is_infinite() && bound.is_sign_positive() {
         i64::MAX
@@ -269,51 +353,61 @@ fn bound_to_i64(bound: f64) -> i64 {
     }
 }
 
-fn is_decomposable(ert: &[Vec<f64>], i: usize, m: i64, a1: i64) -> bool {
+#[inline(always)]
+fn is_decomposable(ert: &[f64], n_cols: usize, i: usize, m: i64, a1: i64) -> bool {
     if m < 0 {
         return false;
     }
     let residue = (m % a1) as usize;
-    ert[residue][i] <= m as f64
+    debug_assert!(residue * n_cols + i < ert.len());
+    unsafe { *ert.get_unchecked(residue * n_cols + i) <= m as f64 }
 }
 
-fn decompose_counts(input: &DecomposeInput) -> Vec<Vec<i32>> {
+fn decompose_counts(input: &DecomposeInput) -> CountTable {
     let num_elements = input.integer_masses.len();
     if input.max_results == 0 || input.max_int < input.min_int {
-        return Vec::new();
+        return CountTable::empty(num_elements);
     }
 
     let a1 = input.integer_masses[0];
     let k = num_elements - 1;
+    let ert = input.ert.as_slice();
+    let integer_masses = input.integer_masses.as_slice();
+    let real_masses = input.real_masses.as_slice();
+    let min_values = input.min_values.as_slice();
+    let rdbe_coeffs = input.rdbe_coeffs.as_slice();
+    let iso_m1_coeffs = input.iso_m1_coeffs.as_slice();
+    let iso_m2_direct = input.iso_m2_direct.as_slice();
     let bounds_i: Vec<i64> = input.bounds.iter().map(|v| bound_to_i64(*v)).collect();
     let max_results = input.max_results as usize;
 
-    let mut out_counts: Vec<Vec<i32>> = Vec::new();
+    let mut out_counts = CountTable::with_capacity(max_results, num_elements);
     let mut mass_valid_count = 0_usize;
+    let mut c = vec![0_i64; num_elements];
 
     for m_target in input.min_int..=input.max_int {
-        let mut c = vec![0_i64; num_elements];
+        c.fill(0);
         let mut i = k;
         let mut m = m_target;
 
         while i <= k && mass_valid_count < max_results {
-            if !is_decomposable(&input.ert, i, m, a1) {
-                while i <= k && !is_decomposable(&input.ert, i, m, a1) {
-                    m += c[i] * input.integer_masses[i];
+            if !is_decomposable(ert, num_elements, i, m, a1) {
+                while i <= k && !is_decomposable(ert, num_elements, i, m, a1) {
+                    m += c[i] * integer_masses[i];
                     c[i] = 0;
                     i += 1;
                 }
                 while i <= k && c[i] >= bounds_i[i] {
-                    m += c[i] * input.integer_masses[i];
+                    m += c[i] * integer_masses[i];
                     c[i] = 0;
                     i += 1;
                 }
                 if i <= k {
-                    m -= input.integer_masses[i];
+                    m -= integer_masses[i];
                     c[i] += 1;
                 }
             } else {
-                while i > 0 && is_decomposable(&input.ert, i - 1, m, a1) {
+                while i > 0 && is_decomposable(ert, num_elements, i - 1, m, a1) {
                     i -= 1;
                 }
 
@@ -324,14 +418,18 @@ fn decompose_counts(input: &DecomposeInput) -> Vec<Vec<i32>> {
                         let mut total = 0_i64;
                         let mut exact_mass = -input.charge_mass_offset;
                         let mut approx_m1 = 0.0;
-                        let mut full_counts = vec![0_i64; num_elements];
+                        let mut rdbe = 1.0;
 
                         for j in 0..num_elements {
-                            let val = c[j] + input.min_values[j];
-                            full_counts[j] = val;
+                            let val = c[j] + min_values[j];
                             total += val;
-                            exact_mass += (val as f64) * input.real_masses[j];
-                            approx_m1 += (val as f64) * input.iso_m1_coeffs[j];
+                            exact_mass += (val as f64) * real_masses[j];
+                            if input.do_rdbe_filter {
+                                rdbe += (val as f64) * rdbe_coeffs[j];
+                            }
+                            if input.do_iso_filter {
+                                approx_m1 += (val as f64) * iso_m1_coeffs[j];
+                            }
                         }
 
                         if total > 0
@@ -342,10 +440,6 @@ fn decompose_counts(input: &DecomposeInput) -> Vec<Vec<i32>> {
                             let mut store = true;
 
                             if input.do_rdbe_filter {
-                                let rdbe = chemistry::rdbe_from_counts_i64(
-                                    &full_counts,
-                                    &input.rdbe_coeffs,
-                                );
                                 store = filters::passes_rdbe_and_octet(
                                     rdbe,
                                     input.rdbe_min,
@@ -364,11 +458,11 @@ fn decompose_counts(input: &DecomposeInput) -> Vec<Vec<i32>> {
                                 );
 
                                 if store && input.obs_m2_ratio > 0.0 {
-                                    let approx_m2 = isotope::approx_m2_from_counts(
-                                        approx_m1,
-                                        &full_counts,
-                                        &input.iso_m2_direct,
-                                    );
+                                    let mut approx_m2 = approx_m1 * approx_m1 * 0.5;
+                                    for j in 0..num_elements {
+                                        let val = c[j] + min_values[j];
+                                        approx_m2 += (val as f64) * iso_m2_direct[j];
+                                    }
                                     store = isotope::within_ratio_tolerance(
                                         approx_m2,
                                         input.obs_m2_ratio,
@@ -379,7 +473,9 @@ fn decompose_counts(input: &DecomposeInput) -> Vec<Vec<i32>> {
                             }
 
                             if store {
-                                out_counts.push(full_counts.iter().map(|v| *v as i32).collect());
+                                for j in 0..num_elements {
+                                    out_counts.push_count((c[j] + min_values[j]) as i32);
+                                }
                             }
                         }
                     }
@@ -388,12 +484,12 @@ fn decompose_counts(input: &DecomposeInput) -> Vec<Vec<i32>> {
                 }
 
                 while i <= k && c[i] >= bounds_i[i] {
-                    m += c[i] * input.integer_masses[i];
+                    m += c[i] * integer_masses[i];
                     c[i] = 0;
                     i += 1;
                 }
                 if i <= k {
-                    m -= input.integer_masses[i];
+                    m -= integer_masses[i];
                     c[i] += 1;
                 }
             }
@@ -404,7 +500,10 @@ fn decompose_counts(input: &DecomposeInput) -> Vec<Vec<i32>> {
 }
 
 pub fn decompose_and_score(input: &DecomposeInput) -> Result<DecomposeOutput, String> {
+    #[cfg(debug_assertions)]
     validate_input(input)?;
+    #[cfg(not(debug_assertions))]
+    debug_assert!(validate_input(input).is_ok());
 
     let counts = decompose_counts(&input);
     let n_results = counts.len();
@@ -432,7 +531,7 @@ pub fn decompose_and_score(input: &DecomposeInput) -> Result<DecomposeOutput, St
         None
     };
 
-    for row in &counts {
+    for row in counts.rows() {
         let mut exact_mass = -input.charge_mass_offset;
         for (count, mass) in row.iter().zip(input.real_masses.iter()) {
             exact_mass += (*count as f64) * mass;
@@ -453,21 +552,26 @@ pub fn decompose_and_score(input: &DecomposeInput) -> Result<DecomposeOutput, St
     }
 
     let mut order: Vec<usize> = (0..n_results).collect();
-    order.sort_by(|a, b| {
+    let compare_error = |a: &usize, b: &usize| {
         abs_err[*a]
             .partial_cmp(&abs_err[*b])
             .unwrap_or(Ordering::Greater)
             .then_with(|| a.cmp(b))
-    });
+    };
+    if n_results >= 100_000 {
+        order.par_sort_unstable_by(compare_error);
+    } else {
+        order.sort_unstable_by(compare_error);
+    }
 
-    let mut sorted_counts = Vec::with_capacity(n_results);
+    let mut sorted_counts = CountTable::with_capacity(n_results, counts.n_cols());
     let mut sorted_masses = Vec::with_capacity(n_results);
     let mut sorted_ppm = Vec::with_capacity(n_results);
     let mut sorted_da = Vec::with_capacity(n_results);
     let mut sorted_rdbe = rdbe.as_ref().map(|_| Vec::with_capacity(n_results));
 
     for idx in order {
-        sorted_counts.push(counts[idx].clone());
+        sorted_counts.push_row(counts.row(idx));
         sorted_masses.push(exact_masses[idx]);
         sorted_ppm.push(error_ppm[idx]);
         sorted_da.push(error_da[idx]);
@@ -491,7 +595,7 @@ mod tests {
 
     fn two_element_input() -> DecomposeInput {
         DecomposeInput {
-            ert: std::sync::Arc::new(vec![vec![0.0, 0.0]]),
+            ert: std::sync::Arc::new(vec![0.0, 0.0]),
             integer_masses: std::sync::Arc::new(vec![1, 2]),
             real_masses: std::sync::Arc::new(vec![1.0, 2.0]),
             bounds: vec![f64::INFINITY, f64::INFINITY],
@@ -525,7 +629,7 @@ mod tests {
     fn decomposes_and_scores_simple_integer_system() {
         let input = two_element_input();
         let output = decompose_and_score(&input).unwrap();
-        assert_eq!(output.counts, vec![vec![2, 0], vec![0, 1]]);
+        assert_eq!(output.counts.to_rows(), vec![vec![2, 0], vec![0, 1]]);
         assert_eq!(output.exact_masses, vec![2.0, 2.0]);
         assert_eq!(output.error_da, vec![0.0, 0.0]);
     }

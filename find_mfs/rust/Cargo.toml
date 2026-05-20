@@ -12,6 +12,7 @@ crate-type = ["cdylib"]
 [dependencies]
 libloading = "0.8"
 pyo3 = { version = "0.22.6", optional = true }
+rayon = "1.10"
 
 [features]
 default = ["extension-module"]

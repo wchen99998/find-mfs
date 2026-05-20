@@ -2,6 +2,7 @@ use std::ffi::c_void;
 use std::os::raw::c_int;
 
 use libloading::Library;
+use rayon::prelude::*;
 
 type SetupIso =
     unsafe extern "C" fn(c_int, *const i32, *const i32, *const f64, *const f64) -> *mut c_void;
@@ -92,6 +93,8 @@ pub struct IsotopeScoreOutput {
     pub peak_matches: Vec<Vec<i8>>,
 }
 
+const RAYON_ISOTOPE_MIN_CANDIDATES: usize = 32;
+
 pub fn score_isotope_batch(
     counts_2d: &[Vec<i32>],
     input: &IsotopeScoringInput,
@@ -102,15 +105,34 @@ pub fn score_isotope_batch(
     let n_obs = input.observed_mz.len();
     let iso_offsets = isotope_offsets(&input.isotope_numbers);
 
-    let mut rmse = Vec::with_capacity(counts_2d.len());
-    let mut match_fraction = Vec::with_capacity(counts_2d.len());
-    let mut n_matched = Vec::with_capacity(counts_2d.len());
-    let mut peak_matches = Vec::with_capacity(counts_2d.len());
+    let rows: Vec<(f64, f64, i32, Vec<i8>)> =
+        if counts_2d.len() >= RAYON_ISOTOPE_MIN_CANDIDATES {
+            counts_2d
+                .par_iter()
+                .map(|counts| {
+                    let mut matches = vec![0_i8; n_obs];
+                    let (r, mf, nm) =
+                        score_candidate_zeroskip(&lib, counts, &iso_offsets, input, &mut matches)?;
+                    Ok((r, mf, nm, matches))
+                })
+                .collect::<Result<Vec<_>, String>>()?
+        } else {
+            let mut rows = Vec::with_capacity(counts_2d.len());
+            for counts in counts_2d {
+                let mut matches = vec![0_i8; n_obs];
+                let (r, mf, nm) =
+                    score_candidate_zeroskip(&lib, counts, &iso_offsets, input, &mut matches)?;
+                rows.push((r, mf, nm, matches));
+            }
+            rows
+        };
 
-    for counts in counts_2d {
-        let mut matches = vec![0_i8; n_obs];
-        let (r, mf, nm) =
-            score_candidate_zeroskip(&lib, counts, &iso_offsets, input, &mut matches)?;
+    let mut rmse = Vec::with_capacity(rows.len());
+    let mut match_fraction = Vec::with_capacity(rows.len());
+    let mut n_matched = Vec::with_capacity(rows.len());
+    let mut peak_matches = Vec::with_capacity(rows.len());
+
+    for (r, mf, nm, matches) in rows {
         rmse.push(r);
         match_fraction.push(mf);
         n_matched.push(nm);
