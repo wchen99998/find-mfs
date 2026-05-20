@@ -5,6 +5,7 @@ mod decomposer;
 mod filters;
 mod finder;
 mod formula;
+pub mod fragmentation_tree;
 mod isospec_ffi;
 mod isotope;
 mod prior;

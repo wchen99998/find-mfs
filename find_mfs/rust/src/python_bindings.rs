@@ -4,10 +4,15 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict};
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 
 use crate::chemistry;
 use crate::finder::StoredFormulaFinder;
 use crate::formula;
+use crate::fragmentation_tree::{
+    compute_fragmentation_tree, FragmentCandidate, GraphScoring, SubFormulaGraphInput,
+    TreeSolveOptions,
+};
 use crate::prior::PriorScorer;
 use crate::query::FindFormulaeOutput;
 
@@ -32,6 +37,20 @@ type DisplayRowTuple = (
     Option<f64>,
 );
 type PublicResultTuple = (PyRustQueryResult, (f64, Vec<String>, Vec<i32>));
+type PyFragmentCandidateTuple = (String, Vec<i32>, String, usize, i32, f64, f64);
+type PySelectedLossTuple = (String, String, f64);
+type PyFragmentationTreeTuple = (
+    f64,
+    bool,
+    String,
+    String,
+    Vec<String>,
+    Vec<PySelectedLossTuple>,
+    usize,
+    usize,
+    usize,
+    usize,
+);
 
 struct PyIsotopeMatchInput {
     enable_iso_prefilter: bool,
@@ -1015,11 +1034,149 @@ fn parse_element_symbols(formula_str: &str) -> PyResult<Vec<String>> {
     formula::parse_element_symbols(formula_str).map_err(PyValueError::new_err)
 }
 
+fn py_fragment_candidates(values: Vec<PyFragmentCandidateTuple>) -> Vec<FragmentCandidate> {
+    values
+        .into_iter()
+        .map(
+            |(formula, counts, ionization, peak_id, color, mass, score)| FragmentCandidate {
+                formula,
+                counts,
+                ionization,
+                peak_id,
+                color,
+                mass,
+                score,
+            },
+        )
+        .collect()
+}
+
+fn py_color_scores(values: Option<Vec<(i32, f64)>>) -> BTreeMap<i32, f64> {
+    values.unwrap_or_default().into_iter().collect()
+}
+
+fn py_peak_pair_scores(values: Option<Vec<(i32, i32, f64)>>) -> BTreeMap<(i32, i32), f64> {
+    values
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(parent_color, child_color, score)| ((parent_color, child_color), score))
+        .collect()
+}
+
+fn py_formula_scores(values: Option<Vec<(String, f64)>>) -> BTreeMap<String, f64> {
+    values.unwrap_or_default().into_iter().collect()
+}
+
+fn py_loss_scores(values: Option<Vec<(String, String, f64)>>) -> BTreeMap<(String, String), f64> {
+    values
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(parent_formula, child_formula, score)| ((parent_formula, child_formula), score))
+        .collect()
+}
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+#[pyo3(signature = (
+    root_candidates,
+    fragment_candidates,
+    allowed_ionizations=None,
+    peak_scores=None,
+    peak_pair_scores=None,
+    fragment_scores=None,
+    loss_scores=None,
+    general_graph_score=0.0,
+    reduce_graph=true,
+    minimal_score=None,
+    time_limit_seconds=None,
+    threads=None
+))]
+fn solve_fragmentation_tree_python(
+    py: Python<'_>,
+    root_candidates: Vec<PyFragmentCandidateTuple>,
+    fragment_candidates: Vec<PyFragmentCandidateTuple>,
+    allowed_ionizations: Option<Vec<String>>,
+    peak_scores: Option<Vec<(i32, f64)>>,
+    peak_pair_scores: Option<Vec<(i32, i32, f64)>>,
+    fragment_scores: Option<Vec<(String, f64)>>,
+    loss_scores: Option<Vec<(String, String, f64)>>,
+    general_graph_score: f64,
+    reduce_graph: bool,
+    minimal_score: Option<f64>,
+    time_limit_seconds: Option<f64>,
+    threads: Option<u32>,
+) -> PyResult<PyFragmentationTreeTuple> {
+    let input = SubFormulaGraphInput {
+        root_candidates: py_fragment_candidates(root_candidates),
+        fragment_candidates: py_fragment_candidates(fragment_candidates),
+        allowed_ionizations: allowed_ionizations.unwrap_or_default(),
+    };
+    let scoring = GraphScoring {
+        peak_scores: py_color_scores(peak_scores),
+        peak_pair_scores: py_peak_pair_scores(peak_pair_scores),
+        fragment_scores: py_formula_scores(fragment_scores),
+        loss_scores: py_loss_scores(loss_scores),
+        general_graph_score,
+    };
+    let options = TreeSolveOptions {
+        minimal_score,
+        time_limit_seconds,
+        threads,
+    };
+
+    let result = py
+        .allow_threads(move || compute_fragmentation_tree(input, &scoring, options, reduce_graph))
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+
+    let tree_graph = result.reduced_graph.as_ref().unwrap_or(&result.graph);
+    let selected_formulas = result
+        .tree
+        .selected_fragments
+        .iter()
+        .map(|fragment_id| tree_graph.fragments[*fragment_id].formula.clone())
+        .collect();
+    let selected_losses = result
+        .tree
+        .selected_edges
+        .iter()
+        .map(|edge_id| {
+            let edge = &tree_graph.edges[*edge_id];
+            (
+                tree_graph.fragments[edge.source].formula.clone(),
+                tree_graph.fragments[edge.target].formula.clone(),
+                edge.weight,
+            )
+        })
+        .collect();
+    let root_formula = tree_graph.fragments[result.tree.root_fragment]
+        .formula
+        .clone();
+    let (reduced_vertices, reduced_edges) = result
+        .reduced_graph
+        .as_ref()
+        .map(|graph| (graph.fragments.len(), graph.edges.len()))
+        .unwrap_or((0, 0));
+
+    Ok((
+        result.tree.tree_weight,
+        result.tree.is_optimal,
+        format!("{:?}", result.tree.status),
+        root_formula,
+        selected_formulas,
+        selected_losses,
+        result.graph.fragments.len(),
+        result.graph.edges.len(),
+        reduced_vertices,
+        reduced_edges,
+    ))
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRustFormulaFinder>()?;
     m.add_class::<PyRustQueryResult>()?;
     m.add_function(wrap_pyfunction!(format_formula, m)?)?;
     m.add_function(wrap_pyfunction!(parse_formula_counts, m)?)?;
     m.add_function(wrap_pyfunction!(parse_element_symbols, m)?)?;
+    m.add_function(wrap_pyfunction!(solve_fragmentation_tree_python, m)?)?;
     Ok(())
 }

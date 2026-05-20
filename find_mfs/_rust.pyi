@@ -214,3 +214,32 @@ def format_formula(symbols: list[str], counts: list[int], charge: int) -> str: .
 def parse_formula_counts(formula_str: str, symbols: list[str]) -> list[int]: ...
 
 def parse_element_symbols(formula_str: str) -> list[str]: ...
+
+FragmentCandidateTuple = tuple[str, list[int], str, int, int, float, float]
+SelectedLossTuple = tuple[str, str, float]
+
+def solve_fragmentation_tree_python(
+    root_candidates: list[FragmentCandidateTuple],
+    fragment_candidates: list[FragmentCandidateTuple],
+    allowed_ionizations: Optional[list[str]] = None,
+    peak_scores: Optional[list[tuple[int, float]]] = None,
+    peak_pair_scores: Optional[list[tuple[int, int, float]]] = None,
+    fragment_scores: Optional[list[tuple[str, float]]] = None,
+    loss_scores: Optional[list[tuple[str, str, float]]] = None,
+    general_graph_score: float = 0.0,
+    reduce_graph: bool = True,
+    minimal_score: Optional[float] = None,
+    time_limit_seconds: Optional[float] = None,
+    threads: Optional[int] = None,
+) -> tuple[
+    float,
+    bool,
+    str,
+    str,
+    list[str],
+    list[SelectedLossTuple],
+    int,
+    int,
+    int,
+    int,
+]: ...

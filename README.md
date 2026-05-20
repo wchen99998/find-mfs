@@ -126,6 +126,57 @@ Formula                   Error (ppm)     Error (Da)      RDBE       Iso. Matche
 [C25H33N12O5S]+                     3.44       0.002110      15.5           3/3    0.0146
 ```
 
+**Fragmentation trees**
+
+Fragmentation tree optimization uses explicit fragment candidates and scoring
+terms, then solves the exact colorful-tree ILP with the Rust HiGHS backend.
+
+```python
+from find_mfs import (
+    ExplicitFragmentationScoring,
+    FragmentCandidate,
+    FragmentationTreeFinder,
+)
+
+finder = FragmentationTreeFinder("CH")
+tree = finder.find_tree(
+    root_candidates=[
+        FragmentCandidate("C4H8", 56.0, score=1.0, peak_id=0, color=0),
+    ],
+    fragment_candidates=[
+        FragmentCandidate("C3H6", 42.0, score=3.0, peak_id=1, color=1),
+        FragmentCandidate("C2H4", 28.0, score=5.0, peak_id=2, color=2),
+    ],
+    scoring=ExplicitFragmentationScoring(
+        peak_scores={1: 4.0, 2: 7.0},
+        peak_pair_scores={(0, 1): 1.0, (1, 2): 2.0},
+    ),
+)
+
+tree.tree_score
+tree.losses_table()
+```
+
+For raw MS/MS peaks, use `FragmentationSpectrum` and the built-in SIRIUS-like
+default scorer:
+
+```python
+from find_mfs import FragmentationSpectrum, SpectrumPeak
+
+spectrum = FragmentationSpectrum(
+    precursor_mz=613.2392,
+    precursor_formula="C31H36N2O11",
+    precursor_ion="[M+H]+",
+    peaks=[
+        SpectrumPeak(218.1051, 8628),
+        SpectrumPeak(396.1480, 8560),
+        SpectrumPeak(397.1508, 2156),
+    ],
+)
+
+tree = FragmentationTreeFinder("CHNO").find_tree_from_spectrum(spectrum)
+```
+
 ### Jupyter Notebook:
 See [this Jupyter notebook](docs/basic_usage.ipynb) for more thorough examples/demonstrations
 

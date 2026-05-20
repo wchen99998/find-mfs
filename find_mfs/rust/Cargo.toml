@@ -10,6 +10,7 @@ name = "_rust"
 crate-type = ["cdylib"]
 
 [dependencies]
+good_lp = { version = "1.15.1", default-features = false, features = ["highs"] }
 libloading = "0.8"
 pyo3 = { version = "0.22.6", optional = true }
 rayon = "1.10"

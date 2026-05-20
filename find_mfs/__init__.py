@@ -30,6 +30,21 @@ from .isotopes.results import SingleEnvelopeMatchResult, IsotopeMatchResult
 # Scoring
 from .scoring import FormulaPrior
 
+# Fragmentation trees
+from .fragmentation import (
+    ExplicitFragmentationScoring,
+    Fragment,
+    FragmentCandidate,
+    FragmentationSpectrum,
+    FragmentationTree,
+    FragmentationTreeFinder,
+    FragmentationTreeOptions,
+    FragmentationTreeSearchResults,
+    Loss,
+    SiriusLikeScoringConfig,
+    SpectrumPeak,
+)
+
 # Utility funcs
 from find_mfs.utils.filtering import (
     passes_octet_rule,
@@ -134,7 +149,7 @@ __all__ = [
     "MassDecomposer",
     "FormulaValidator",
 
-     # Isotope matching
+    # Isotope matching
     "get_isotope_envelope",
     "match_isotope_envelope",
 
@@ -148,6 +163,19 @@ __all__ = [
 
     # Scoring
     "FormulaPrior",
+
+    # Fragmentation trees
+    "FragmentationTreeFinder",
+    "FragmentationSpectrum",
+    "SpectrumPeak",
+    "FragmentCandidate",
+    "ExplicitFragmentationScoring",
+    "SiriusLikeScoringConfig",
+    "FragmentationTreeOptions",
+    "Fragment",
+    "Loss",
+    "FragmentationTree",
+    "FragmentationTreeSearchResults",
 
     # Utilities
     "passes_octet_rule",

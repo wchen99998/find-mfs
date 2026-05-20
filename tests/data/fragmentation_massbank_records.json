@@ -1,0 +1,1483 @@
+[
+  {
+    "accession": "MSBNK-Athens_Univ-AU116706",
+    "acquisition": {
+      "chromatography": [
+        {
+          "subtag": "COLUMN_NAME",
+          "value": "Acclaim RSLC C18 2.2um, 2.1x100mm, Thermo"
+        },
+        {
+          "subtag": "FLOW_GRADIENT",
+          "value": "99/1 at 0-1 min, 61/39 at 3 min, 0.1/99.9 at 14-16 min, 99/1 at 16.1-20 min"
+        },
+        {
+          "subtag": "FLOW_RATE",
+          "value": "200 uL/min at 0-3 min, 400 uL/min at 14 min, 480 uL/min at 16-19 min, 200 uL/min at 19.1-20 min"
+        },
+        {
+          "subtag": "RETENTION_TIME",
+          "value": "11.141 min"
+        },
+        {
+          "subtag": "SOLVENT",
+          "value": "A 90:10 water:methanol with 0.01% formic acid and 5mM ammonium formate"
+        },
+        {
+          "subtag": "SOLVENT",
+          "value": "B methanol with 0.01% formic acid and 5mM ammonium formate"
+        }
+      ],
+      "instrument": "Bruker maXis Impact",
+      "instrument_type": "LC-ESI-QTOF",
+      "mass_spectrometry": {
+        "ion_mode": "POSITIVE",
+        "ms_type": "MS2",
+        "subtags": [
+          {
+            "subtag": "IONIZATION",
+            "value": "ESI"
+          },
+          {
+            "subtag": "FRAGMENTATION_MODE",
+            "value": "CID"
+          },
+          {
+            "subtag": "COLLISION_ENERGY",
+            "value": "20 eV"
+          },
+          {
+            "subtag": "RESOLUTION",
+            "value": "35000"
+          }
+        ]
+      }
+    },
+    "authors": [
+      {
+        "name": "Nikiforos Alygizakis"
+      },
+      {
+        "name": " Reza Aalizadeh"
+      },
+      {
+        "name": " Nikolaos Thomaidis"
+      },
+      {
+        "name": " University of Athens"
+      }
+    ],
+    "compound": {
+      "classes": [
+        "N/A; Environmental Standard"
+      ],
+      "formula": "C31H36N2O11",
+      "inchi": "InChI=1S/C31H36N2O11/c1-14(2)7-8-16-13-17(9-11-19(16)34)27(37)33-21-22(35)18-10-12-20(15(3)24(18)42-28(21)38)41-29-23(36)25(43-30(32)39)26(40-6)31(4,5)44-29/h7,9-13,23,25-26,29,34-36H,8H2,1-6H3,(H2,32,39)(H,33,37)/t23-,25+,26-,29-/m1/s1",
+      "link": [
+        {
+          "database": "CAS",
+          "identifier": "1476-53-5"
+        },
+        {
+          "database": "CHEBI",
+          "identifier": "CHEBI:28368"
+        },
+        {
+          "database": "KEGG",
+          "identifier": "C05080"
+        },
+        {
+          "database": "PUBCHEM",
+          "identifier": "CID:54675769"
+        },
+        {
+          "database": "INCHIKEY",
+          "identifier": "YJQPYGGHQPGBLI-KGSXXDOSSA-N"
+        },
+        {
+          "database": "CHEMSPIDER",
+          "identifier": "10226117"
+        },
+        {
+          "database": "COMPTOX",
+          "identifier": "DTXSID3041083"
+        },
+        {
+          "database": "ChemOnt",
+          "identifier": "CHEMONTID:0001743; Organic compounds; Phenylpropanoids and polyketides; Coumarins and derivatives; Coumarin glycosides"
+        }
+      ],
+      "mass": 612.23191,
+      "names": [
+        "Novobiocin",
+        "novobiocin",
+        "[(3R,4S,5R,6R)-5-hydroxy-6-[4-hydroxy-3-[[4-hydroxy-3-(3-methylbut-2-enyl)benzoyl]amino]-8-methyl-2-oxochromen-7-yl]oxy-3-methoxy-2,2-dimethyloxan-4-yl] carbamate"
+      ],
+      "smiles": "Cc1c(ccc2c1oc(=O)c(c2O)NC(=O)c3ccc(c(c3)CC=C(C)C)O)O[C@H]4[C@@H]([C@@H]([C@H](C(O4)(C)C)OC)OC(=O)N)O"
+    },
+    "date": {
+      "created": "2016-02-21 00:00:00 +0000 +0000",
+      "modified": "2016-02-21 00:00:00 +0000 +0000",
+      "updated": "2016-02-21 00:00:00 +0000 +0000"
+    },
+    "deprecated": {},
+    "license": "CC BY",
+    "mass_spectrometry": {
+      "data_processing": [
+        {
+          "subtag": "RECALIBRATE",
+          "value": "identity on assigned fragments and MS1"
+        },
+        {
+          "subtag": "WHOLE",
+          "value": "RMassBank 1.99.10"
+        }
+      ],
+      "focused_ion": [
+        {
+          "subtag": "BASE_PEAK",
+          "value": "150.1137"
+        },
+        {
+          "subtag": "PRECURSOR_M/Z",
+          "value": "613.2392"
+        },
+        {
+          "subtag": "PRECURSOR_TYPE",
+          "value": "[M+H]+"
+        }
+      ]
+    },
+    "peak": {
+      "annotation": {
+        "header": [
+          "m/z",
+          "tentative_formula",
+          "formula_count",
+          "mass",
+          "error(ppm)"
+        ],
+        "values": [
+          [
+            "125.0601",
+            "143.0719",
+            "157.087",
+            "158.0888",
+            "186.0781",
+            "187.0798",
+            "189.0925",
+            "191.0966",
+            "200.0943",
+            "218.1051",
+            "219.1086",
+            "345.1724",
+            "396.148",
+            "397.1508",
+            "613.2512"
+          ],
+          [
+            "C7H9O2+",
+            "C10H9N+",
+            "C8H13O3+",
+            "C3H14N2O5+",
+            "C11H10N2O+",
+            "C5H15O7+",
+            "H17N2O9+",
+            "CH19O10+",
+            "C12H12N2O+",
+            "C12H14N2O2+",
+            "C11[13]CH14N2O2+",
+            "C23H23NO2+",
+            "C25H20N2O3+",
+            "C24[13]CH20N2O3+",
+            "C31H37N2O11+"
+          ],
+          [
+            "1",
+            "2",
+            "2",
+            "2",
+            "3",
+            "4",
+            "3",
+            "3",
+            "3",
+            "5",
+            "1",
+            "6",
+            "8",
+            "1",
+            "1"
+          ],
+          [
+            "125.0597",
+            "143.073",
+            "157.0859",
+            "158.0897",
+            "186.0788",
+            "187.0812",
+            "189.0929",
+            "191.0973",
+            "200.0944",
+            "218.105",
+            "219.1089",
+            "345.1723",
+            "396.1468",
+            "397.1507",
+            "613.2392"
+          ],
+          [
+            "3.06",
+            "-7.67",
+            "6.74",
+            "-5.95",
+            "-3.42",
+            "-7.51",
+            "-1.98",
+            "-3.38",
+            "-0.65",
+            "0.41",
+            "-1.46",
+            "0.06",
+            "2.89",
+            "0.01",
+            "19.66"
+          ]
+        ]
+      },
+      "numPeak": 15,
+      "peak": {
+        "values": [
+          {
+            "id": 120763,
+            "intensity": 1992,
+            "mz": 125.06009674072266,
+            "rel": 124
+          },
+          {
+            "id": 120764,
+            "intensity": 780,
+            "mz": 143.0718994140625,
+            "rel": 48
+          },
+          {
+            "id": 120765,
+            "intensity": 2436,
+            "mz": 157.08700561523438,
+            "rel": 152
+          },
+          {
+            "id": 120766,
+            "intensity": 656,
+            "mz": 158.08880615234375,
+            "rel": 40
+          },
+          {
+            "id": 120767,
+            "intensity": 2820,
+            "mz": 186.07809448242188,
+            "rel": 176
+          },
+          {
+            "id": 120768,
+            "intensity": 744,
+            "mz": 187.07980346679688,
+            "rel": 46
+          },
+          {
+            "id": 120769,
+            "intensity": 16000,
+            "mz": 189.09249877929688,
+            "rel": 999
+          },
+          {
+            "id": 120770,
+            "intensity": 328,
+            "mz": 191.0966033935547,
+            "rel": 20
+          },
+          {
+            "id": 120771,
+            "intensity": 588,
+            "mz": 200.09429931640625,
+            "rel": 36
+          },
+          {
+            "id": 120772,
+            "intensity": 8628,
+            "mz": 218.1051025390625,
+            "rel": 538
+          },
+          {
+            "id": 120773,
+            "intensity": 1380,
+            "mz": 219.1085968017578,
+            "rel": 86
+          },
+          {
+            "id": 120774,
+            "intensity": 592,
+            "mz": 345.1723937988281,
+            "rel": 36
+          },
+          {
+            "id": 120775,
+            "intensity": 8560,
+            "mz": 396.14801025390625,
+            "rel": 534
+          },
+          {
+            "id": 120776,
+            "intensity": 2156,
+            "mz": 397.1507873535156,
+            "rel": 134
+          },
+          {
+            "id": 120777,
+            "intensity": 776,
+            "mz": 613.251220703125,
+            "rel": 48
+          }
+        ]
+      },
+      "splash": "splash10-000j-0933000000-cd71bb412108d603ba2d"
+    },
+    "species": {},
+    "title": "Novobiocin; LC-ESI-QTOF; MS2; CE: 20 eV; R=35000; [M+H]+"
+  },
+  {
+    "accession": "MSBNK-Athens_Univ-AU276702",
+    "acquisition": {
+      "chromatography": [
+        {
+          "subtag": "COLUMN_NAME",
+          "value": "Acclaim RSLC C18 2.2um, 2.1x100mm, Thermo"
+        },
+        {
+          "subtag": "FLOW_GRADIENT",
+          "value": "99/1 at 0-1 min, 61/39 at 3 min, 0.1/99.9 at 14-16 min, 99/1 at 16.1-20 min"
+        },
+        {
+          "subtag": "FLOW_RATE",
+          "value": "200 uL/min at 0-3 min, 400 uL/min at 14 min, 480 uL/min at 16-19 min, 200 uL/min at 19.1-20 min"
+        },
+        {
+          "subtag": "RETENTION_TIME",
+          "value": "3.427 min"
+        },
+        {
+          "subtag": "SOLVENT",
+          "value": "A 90:10 water:methanol with 0.01% formic acid and 5mM ammonium formate"
+        },
+        {
+          "subtag": "SOLVENT",
+          "value": "B methanol with 0.01% formic acid and 5mM ammonium formate"
+        }
+      ],
+      "instrument": "Bruker maXis Impact",
+      "instrument_type": "LC-ESI-QTOF",
+      "mass_spectrometry": {
+        "ion_mode": "POSITIVE",
+        "ms_type": "MS2",
+        "subtags": [
+          {
+            "subtag": "IONIZATION",
+            "value": "ESI"
+          },
+          {
+            "subtag": "FRAGMENTATION_MODE",
+            "value": "CID"
+          },
+          {
+            "subtag": "COLLISION_ENERGY",
+            "value": "20 eV"
+          },
+          {
+            "subtag": "RESOLUTION",
+            "value": "35000"
+          }
+        ]
+      }
+    },
+    "authors": [
+      {
+        "name": "Nikiforos Alygizakis"
+      },
+      {
+        "name": " Katerina Galani"
+      },
+      {
+        "name": " Nikolaos Thomaidis"
+      },
+      {
+        "name": " University of Athens"
+      }
+    ],
+    "compound": {
+      "classes": [
+        "N/A; Environmental Standard"
+      ],
+      "formula": "C8H9NO2",
+      "inchi": "InChI=1S/C8H9NO2/c1-6(10)9-7-2-4-8(11)5-3-7/h2-5,11H,1H3,(H,9,10)",
+      "link": [
+        {
+          "database": "CAS",
+          "identifier": "103-90-2"
+        },
+        {
+          "database": "CHEBI",
+          "identifier": "CHEBI:46195"
+        },
+        {
+          "database": "KEGG",
+          "identifier": "D00217"
+        },
+        {
+          "database": "PUBCHEM",
+          "identifier": "CID:1983"
+        },
+        {
+          "database": "INCHIKEY",
+          "identifier": "RZVAJINKPMORJF-UHFFFAOYSA-N"
+        },
+        {
+          "database": "CHEMSPIDER",
+          "identifier": "1906"
+        },
+        {
+          "database": "COMPTOX",
+          "identifier": "DTXSID2020006"
+        },
+        {
+          "database": "ChemOnt",
+          "identifier": "CHEMONTID:0004646; Organic compounds; Benzenoids; Phenols; 1-hydroxy-2-unsubstituted benzenoids"
+        }
+      ],
+      "mass": 151.0633285,
+      "names": [
+        "Acetaminophen",
+        "N-(4-hydroxyphenyl)acetamide"
+      ],
+      "smiles": "CC(=O)NC1=CC=C(O)C=C1"
+    },
+    "date": {
+      "created": "2019-05-31 00:00:00 +0000 +0000",
+      "modified": "2019-05-31 00:00:00 +0000 +0000",
+      "updated": "2019-05-31 00:00:00 +0000 +0000"
+    },
+    "deprecated": {},
+    "license": "CC BY",
+    "mass_spectrometry": {
+      "data_processing": [
+        {
+          "subtag": "RECALIBRATE",
+          "value": "identity on assigned fragments and MS1"
+        },
+        {
+          "subtag": "WHOLE",
+          "value": "RMassBank 2.10.1"
+        }
+      ],
+      "focused_ion": [
+        {
+          "subtag": "BASE_PEAK",
+          "value": "152.0695"
+        },
+        {
+          "subtag": "PRECURSOR_M/Z",
+          "value": "152.0706"
+        },
+        {
+          "subtag": "PRECURSOR_TYPE",
+          "value": "[M+H]+"
+        }
+      ]
+    },
+    "peak": {
+      "annotation": {
+        "header": [
+          "m/z",
+          "tentative_formula",
+          "formula_count",
+          "mass",
+          "error(ppm)"
+        ],
+        "values": [
+          [
+            "109.0512",
+            "110.0593",
+            "134.0587",
+            "135.0626",
+            "152.0691",
+            "153.0725"
+          ],
+          [
+            "C6H7NO+",
+            "C6H8NO+",
+            "C8H8NO+",
+            "C7[13]CH8NO+",
+            "C8H10NO2+",
+            "C7[13]CH10NO2+"
+          ],
+          [
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1"
+          ],
+          [
+            "109.0522",
+            "110.06",
+            "134.06",
+            "135.0639",
+            "152.0706",
+            "153.0745"
+          ],
+          [
+            "-9.47",
+            "-6.88",
+            "-9.69",
+            "-10.2",
+            "-9.98",
+            "-12.89"
+          ]
+        ]
+      },
+      "numPeak": 6,
+      "peak": {
+        "values": [
+          {
+            "id": 199599,
+            "intensity": 356,
+            "mz": 109.05120086669922,
+            "rel": 8
+          },
+          {
+            "id": 199600,
+            "intensity": 4856,
+            "mz": 110.0593032836914,
+            "rel": 115
+          },
+          {
+            "id": 199601,
+            "intensity": 5744,
+            "mz": 134.05870056152344,
+            "rel": 136
+          },
+          {
+            "id": 199602,
+            "intensity": 512,
+            "mz": 135.06260681152344,
+            "rel": 12
+          },
+          {
+            "id": 199603,
+            "intensity": 41928,
+            "mz": 152.06910705566406,
+            "rel": 999
+          },
+          {
+            "id": 199604,
+            "intensity": 4712,
+            "mz": 153.07249450683594,
+            "rel": 112
+          }
+        ]
+      },
+      "splash": "splash10-0udi-0900000000-4838c7050bb5899e6718"
+    },
+    "species": {},
+    "title": "Acetaminophen; LC-ESI-QTOF; MS2; CE: 20 eV; R=35000; [M+H]+"
+  },
+  {
+    "accession": "MSBNK-ACES_SU-AS000913",
+    "acquisition": {
+      "chromatography": [
+        {
+          "subtag": "COLUMN_NAME",
+          "value": "Waters; Acquity UPLC BEH C18, 3.0 x 100 mm, 1.7 um, Waters"
+        },
+        {
+          "subtag": "FLOW_GRADIENT",
+          "value": "95/5 at 0.7 min, 0/100 at 12 min, 0/100 at 15.5 min, 95/5 at 15.6 min, 95/5 at 20 min"
+        },
+        {
+          "subtag": "FLOW_RATE",
+          "value": "0.4 mL/min"
+        },
+        {
+          "subtag": "RETENTION_TIME",
+          "value": "6.69"
+        },
+        {
+          "subtag": "UOA_RTI",
+          "value": "307.38"
+        },
+        {
+          "subtag": "SOLVENT",
+          "value": "A 1mM ammonium fluoride in water"
+        },
+        {
+          "subtag": "SOLVENT",
+          "value": "B MeOH"
+        },
+        {
+          "subtag": "COMMENT",
+          "value": "Column oven at 50\u00b0C"
+        }
+      ],
+      "instrument": "Exploris 480 Orbitrap (Thermo Scientific)",
+      "instrument_type": "LC-ESI-QFT",
+      "mass_spectrometry": {
+        "ion_mode": "POSITIVE",
+        "ms_type": "MS2",
+        "subtags": [
+          {
+            "subtag": "IONIZATION",
+            "value": "ESI"
+          },
+          {
+            "subtag": "FRAGMENTATION_MODE",
+            "value": "HCD"
+          },
+          {
+            "subtag": "COLLISION_ENERGY",
+            "value": "Ramp 20%-70% (nominal)"
+          },
+          {
+            "subtag": "RESOLUTION",
+            "value": "30000"
+          }
+        ]
+      }
+    },
+    "authors": [
+      {
+        "name": "ACESx"
+      },
+      {
+        "name": " National Facility for Exposomics"
+      }
+    ],
+    "compound": {
+      "classes": [
+        "Imidazopyrimidines; Purines and purine derivatives; Xanthines"
+      ],
+      "formula": "C8H10N4O2",
+      "inchi": "InChI=1S/C8H10N4O2/c1-10-4-9-6-5(10)7(13)12(3)8(14)11(6)2/h4H,1-3H3",
+      "link": [
+        {
+          "database": "CAS",
+          "identifier": "58-08-2"
+        },
+        {
+          "database": "PUBCHEM",
+          "identifier": "CID: 2519"
+        },
+        {
+          "database": "INCHIKEY",
+          "identifier": "RYYVLZVUVIJVGH-UHFFFAOYSA-N"
+        },
+        {
+          "database": "COMPTOX",
+          "identifier": "DTXSID0020232"
+        },
+        {
+          "database": "ChemOnt",
+          "identifier": "CHEMONTID:0000245; Organic compounds; Organoheterocyclic compounds; Imidazopyrimidines; Purines and purine derivatives"
+        }
+      ],
+      "mass": 194.08038,
+      "names": [
+        "Caffeine",
+        "1,3,7-trimethylpurine-2,6-dione"
+      ],
+      "smiles": "CN1C=NC2=C1C(=O)N(C(=O)N2C)C"
+    },
+    "date": {
+      "created": "2025-06-26 00:00:00 +0000 +0000",
+      "modified": "2025-06-26 00:00:00 +0000 +0000",
+      "updated": "2025-06-26 00:00:00 +0000 +0000"
+    },
+    "deprecated": {},
+    "license": "CC BY",
+    "mass_spectrometry": {
+      "data_processing": [
+        {
+          "subtag": "WHOLE",
+          "value": "MS-DIAL"
+        }
+      ],
+      "focused_ion": [
+        {
+          "subtag": "BASE_PEAK",
+          "value": "195.08723"
+        },
+        {
+          "subtag": "PRECURSOR_M/Z",
+          "value": "195.0873"
+        },
+        {
+          "subtag": "PRECURSOR_TYPE",
+          "value": "[M+H]+"
+        }
+      ]
+    },
+    "peak": {
+      "annotation": {},
+      "numPeak": 18,
+      "peak": {
+        "values": [
+          {
+            "id": 48386,
+            "intensity": 501131,
+            "mz": 56.049461364746094,
+            "rel": 10
+          },
+          {
+            "id": 48387,
+            "intensity": 84929,
+            "mz": 65.44908142089844,
+            "rel": 1
+          },
+          {
+            "id": 48388,
+            "intensity": 1485779,
+            "mz": 69.0445785522461,
+            "rel": 32
+          },
+          {
+            "id": 48389,
+            "intensity": 1011200,
+            "mz": 83.06025695800781,
+            "rel": 22
+          },
+          {
+            "id": 48390,
+            "intensity": 95503,
+            "mz": 98.15650177001953,
+            "rel": 2
+          },
+          {
+            "id": 48391,
+            "intensity": 326389,
+            "mz": 109.03959655761719,
+            "rel": 7
+          },
+          {
+            "id": 48392,
+            "intensity": 5357670,
+            "mz": 110.07127380371094,
+            "rel": 117
+          },
+          {
+            "id": 48393,
+            "intensity": 217111,
+            "mz": 111.0550765991211,
+            "rel": 4
+          },
+          {
+            "id": 48394,
+            "intensity": 89344,
+            "mz": 112.89408111572266,
+            "rel": 1
+          },
+          {
+            "id": 48395,
+            "intensity": 81363,
+            "mz": 121.1495590209961,
+            "rel": 1
+          },
+          {
+            "id": 48396,
+            "intensity": 421128,
+            "mz": 123.04254913330078,
+            "rel": 9
+          },
+          {
+            "id": 48397,
+            "intensity": 20509112,
+            "mz": 138.06626892089844,
+            "rel": 447
+          },
+          {
+            "id": 48398,
+            "intensity": 130764,
+            "mz": 139.0628662109375,
+            "rel": 2
+          },
+          {
+            "id": 48399,
+            "intensity": 410425,
+            "mz": 139.06930541992188,
+            "rel": 8
+          },
+          {
+            "id": 48400,
+            "intensity": 105255,
+            "mz": 180.06414794921875,
+            "rel": 2
+          },
+          {
+            "id": 48401,
+            "intensity": 303099,
+            "mz": 194.07070922851562,
+            "rel": 6
+          },
+          {
+            "id": 48402,
+            "intensity": 45741580,
+            "mz": 195.0872344970703,
+            "rel": 999
+          },
+          {
+            "id": 48403,
+            "intensity": 946474,
+            "mz": 196.091064453125,
+            "rel": 20
+          }
+        ]
+      },
+      "splash": "splash10-0002-0900000000-b1e843bb28c99c3640c3"
+    },
+    "species": {},
+    "title": "Caffeine; LC-ESI-QFT; MS2; Ramp 20%-70% (nominal); 30000; [M+H]+"
+  },
+  {
+    "accession": "MSBNK-Athens_Univ-AU110802",
+    "acquisition": {
+      "chromatography": [
+        {
+          "subtag": "COLUMN_NAME",
+          "value": "Acclaim RSLC C18 2.2um, 2.1x100mm, Thermo"
+        },
+        {
+          "subtag": "FLOW_GRADIENT",
+          "value": "99/1 at 0-1 min, 61/39 at 3 min, 0.1/99.9 at 14-16 min, 99/1 at 16.1-20 min"
+        },
+        {
+          "subtag": "FLOW_RATE",
+          "value": "200 uL/min at 0-3 min, 400 uL/min at 14 min, 480 uL/min at 16-19 min, 200 uL/min at 19.1-20 min"
+        },
+        {
+          "subtag": "RETENTION_TIME",
+          "value": "6.343 min"
+        },
+        {
+          "subtag": "SOLVENT",
+          "value": "A 90:10 water:methanol with 0.01% formic acid and 5mM ammonium formate"
+        },
+        {
+          "subtag": "SOLVENT",
+          "value": "B methanol with 0.01% formic acid and 5mM ammonium formate"
+        }
+      ],
+      "instrument": "Bruker maXis Impact",
+      "instrument_type": "LC-ESI-QTOF",
+      "mass_spectrometry": {
+        "ion_mode": "POSITIVE",
+        "ms_type": "MS2",
+        "subtags": [
+          {
+            "subtag": "IONIZATION",
+            "value": "ESI"
+          },
+          {
+            "subtag": "FRAGMENTATION_MODE",
+            "value": "CID"
+          },
+          {
+            "subtag": "COLLISION_ENERGY",
+            "value": "20 eV"
+          },
+          {
+            "subtag": "RESOLUTION",
+            "value": "35000"
+          }
+        ]
+      }
+    },
+    "authors": [
+      {
+        "name": "Nikiforos Alygizakis"
+      },
+      {
+        "name": " Katerina Galani"
+      },
+      {
+        "name": " Nikolaos Thomaidis"
+      },
+      {
+        "name": " University of Athens"
+      }
+    ],
+    "compound": {
+      "classes": [
+        "N/A; Environmental Standard"
+      ],
+      "formula": "C16H21NO2",
+      "inchi": "InChI=1S/C16H21NO2/c1-12(2)17-10-14(18)11-19-16-9-5-7-13-6-3-4-8-15(13)16/h3-9,12,14,17-18H,10-11H2,1-2H3",
+      "link": [
+        {
+          "database": "CAS",
+          "identifier": "525-66-6"
+        },
+        {
+          "database": "CHEBI",
+          "identifier": "CHEBI:8499"
+        },
+        {
+          "database": "KEGG",
+          "identifier": "D08443"
+        },
+        {
+          "database": "PUBCHEM",
+          "identifier": "CID:4946"
+        },
+        {
+          "database": "INCHIKEY",
+          "identifier": "AQHHHDLHHXJYJD-UHFFFAOYSA-N"
+        },
+        {
+          "database": "CHEMSPIDER",
+          "identifier": "4777"
+        },
+        {
+          "database": "COMPTOX",
+          "identifier": "DTXSID6023525"
+        },
+        {
+          "database": "ChemOnt",
+          "identifier": "CHEMONTID:0000023; Organic compounds; Benzenoids; Naphthalenes"
+        }
+      ],
+      "mass": 259.1572289,
+      "names": [
+        "Propranolol",
+        "1-naphthalen-1-yloxy-3-(propan-2-ylamino)propan-2-ol"
+      ],
+      "smiles": "CC(C)NCC(O)COC1=C2C=CC=CC2=CC=C1"
+    },
+    "date": {
+      "created": "2019-05-30 00:00:00 +0000 +0000",
+      "modified": "2019-05-30 00:00:00 +0000 +0000",
+      "updated": "2019-05-30 00:00:00 +0000 +0000"
+    },
+    "deprecated": {},
+    "license": "CC BY",
+    "mass_spectrometry": {
+      "data_processing": [
+        {
+          "subtag": "RECALIBRATE",
+          "value": "identity on assigned fragments and MS1"
+        },
+        {
+          "subtag": "WHOLE",
+          "value": "RMassBank 2.10.1"
+        }
+      ],
+      "focused_ion": [
+        {
+          "subtag": "BASE_PEAK",
+          "value": "325.1714"
+        },
+        {
+          "subtag": "PRECURSOR_M/Z",
+          "value": "260.1645"
+        },
+        {
+          "subtag": "PRECURSOR_TYPE",
+          "value": "[M+H]+"
+        }
+      ]
+    },
+    "peak": {
+      "annotation": {
+        "header": [
+          "m/z",
+          "tentative_formula",
+          "formula_count",
+          "mass",
+          "error(ppm)"
+        ],
+        "values": [
+          [
+            "116.1064",
+            "117.1095",
+            "129.0688",
+            "141.0687",
+            "145.0636",
+            "153.0686",
+            "155.0844",
+            "156.0875",
+            "157.0637",
+            "158.0673",
+            "165.0686",
+            "183.0794",
+            "184.0825",
+            "218.1168",
+            "219.1204",
+            "242.153",
+            "260.164",
+            "261.1672",
+            "262.1701"
+          ],
+          [
+            "C6H14NO+",
+            "C5[13]CH14NO+",
+            "C10H9+",
+            "C11H9+",
+            "C10H9O+",
+            "C12H9+",
+            "C12H11+",
+            "C11[13]CH11+",
+            "C11H9O+",
+            "C10[13]CH9O+",
+            "C13H9+",
+            "C13H11O+",
+            "C12[13]CH11O+",
+            "C13H16NO2+",
+            "C12[13]CH16NO2+",
+            "C16H20NO+",
+            "C16H22NO2+",
+            "C15[13]CH22NO2+",
+            "C14[13]C2H22NO2+"
+          ],
+          [
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1"
+          ],
+          [
+            "116.107",
+            "117.1109",
+            "129.0699",
+            "141.0699",
+            "145.0648",
+            "153.0699",
+            "155.0855",
+            "156.0894",
+            "157.0648",
+            "158.0687",
+            "165.0699",
+            "183.0804",
+            "184.0843",
+            "218.1176",
+            "219.1215",
+            "242.1539",
+            "260.1645",
+            "261.1684",
+            "262.1718"
+          ],
+          [
+            "-5.13",
+            "-12.3",
+            "-8.73",
+            "-8.27",
+            "-8.48",
+            "-8.06",
+            "-7.4",
+            "-12.13",
+            "-7.25",
+            "-9.03",
+            "-7.85",
+            "-5.89",
+            "-9.82",
+            "-3.4",
+            "-4.85",
+            "-3.72",
+            "-1.85",
+            "-4.73",
+            "-6.42"
+          ]
+        ]
+      },
+      "numPeak": 19,
+      "peak": {
+        "values": [
+          {
+            "id": 117921,
+            "intensity": 58788,
+            "mz": 116.10639953613281,
+            "rel": 52
+          },
+          {
+            "id": 117922,
+            "intensity": 6032,
+            "mz": 117.1094970703125,
+            "rel": 5
+          },
+          {
+            "id": 117923,
+            "intensity": 11680,
+            "mz": 129.0688018798828,
+            "rel": 10
+          },
+          {
+            "id": 117924,
+            "intensity": 13272,
+            "mz": 141.06869506835938,
+            "rel": 11
+          },
+          {
+            "id": 117925,
+            "intensity": 13400,
+            "mz": 145.0635986328125,
+            "rel": 11
+          },
+          {
+            "id": 117926,
+            "intensity": 7052,
+            "mz": 153.068603515625,
+            "rel": 6
+          },
+          {
+            "id": 117927,
+            "intensity": 47876,
+            "mz": 155.0843963623047,
+            "rel": 42
+          },
+          {
+            "id": 117928,
+            "intensity": 6032,
+            "mz": 156.08749389648438,
+            "rel": 5
+          },
+          {
+            "id": 117929,
+            "intensity": 120680,
+            "mz": 157.06370544433594,
+            "rel": 106
+          },
+          {
+            "id": 117930,
+            "intensity": 12580,
+            "mz": 158.0673065185547,
+            "rel": 11
+          },
+          {
+            "id": 117931,
+            "intensity": 15940,
+            "mz": 165.068603515625,
+            "rel": 14
+          },
+          {
+            "id": 117932,
+            "intensity": 302412,
+            "mz": 183.07940673828125,
+            "rel": 267
+          },
+          {
+            "id": 117933,
+            "intensity": 36620,
+            "mz": 184.08250427246094,
+            "rel": 32
+          },
+          {
+            "id": 117934,
+            "intensity": 59676,
+            "mz": 218.11680603027344,
+            "rel": 52
+          },
+          {
+            "id": 117935,
+            "intensity": 8744,
+            "mz": 219.1204071044922,
+            "rel": 7
+          },
+          {
+            "id": 117936,
+            "intensity": 7032,
+            "mz": 242.1529998779297,
+            "rel": 6
+          },
+          {
+            "id": 117937,
+            "intensity": 1127720,
+            "mz": 260.16400146484375,
+            "rel": 999
+          },
+          {
+            "id": 117938,
+            "intensity": 141796,
+            "mz": 261.1672058105469,
+            "rel": 125
+          },
+          {
+            "id": 117939,
+            "intensity": 11716,
+            "mz": 262.17010498046875,
+            "rel": 10
+          }
+        ]
+      },
+      "splash": "splash10-03di-0490000000-50826f709e972cce9691"
+    },
+    "species": {},
+    "title": "Propranolol; LC-ESI-QTOF; MS2; CE: 20 eV; R=35000; [M+H]+"
+  },
+  {
+    "accession": "MSBNK-Athens_Univ-AU121202",
+    "acquisition": {
+      "chromatography": [
+        {
+          "subtag": "COLUMN_NAME",
+          "value": "Acclaim RSLC C18 2.2um, 2.1x100mm, Thermo"
+        },
+        {
+          "subtag": "FLOW_GRADIENT",
+          "value": "99/1 at 0-1 min, 61/39 at 3 min, 0.1/99.9 at 14-16 min, 99/1 at 16.1-20 min"
+        },
+        {
+          "subtag": "FLOW_RATE",
+          "value": "200 uL/min at 0-3 min, 400 uL/min at 14 min, 480 uL/min at 16-19 min, 200 uL/min at 19.1-20 min"
+        },
+        {
+          "subtag": "RETENTION_TIME",
+          "value": "4.386 min"
+        },
+        {
+          "subtag": "SOLVENT",
+          "value": "A 90:10 water:methanol with 0.01% formic acid and 5mM ammonium formate"
+        },
+        {
+          "subtag": "SOLVENT",
+          "value": "B methanol with 0.01% formic acid and 5mM ammonium formate"
+        }
+      ],
+      "instrument": "Bruker maXis Impact",
+      "instrument_type": "LC-ESI-QTOF",
+      "mass_spectrometry": {
+        "ion_mode": "POSITIVE",
+        "ms_type": "MS2",
+        "subtags": [
+          {
+            "subtag": "IONIZATION",
+            "value": "ESI"
+          },
+          {
+            "subtag": "FRAGMENTATION_MODE",
+            "value": "CID"
+          },
+          {
+            "subtag": "COLLISION_ENERGY",
+            "value": "20 eV"
+          },
+          {
+            "subtag": "RESOLUTION",
+            "value": "35000"
+          }
+        ]
+      }
+    },
+    "authors": [
+      {
+        "name": "Nikiforos Alygizakis"
+      },
+      {
+        "name": " Katerina Galani"
+      },
+      {
+        "name": " Nikolaos Thomaidis"
+      },
+      {
+        "name": " University of Athens"
+      }
+    ],
+    "compound": {
+      "classes": [
+        "N/A; Environmental Standard"
+      ],
+      "formula": "C14H22N2O",
+      "inchi": "InChI=1S/C14H22N2O/c1-5-16(6-2)10-13(17)15-14-11(3)8-7-9-12(14)4/h7-9H,5-6,10H2,1-4H3,(H,15,17)",
+      "link": [
+        {
+          "database": "CAS",
+          "identifier": "137-58-6"
+        },
+        {
+          "database": "CHEBI",
+          "identifier": "CHEBI:6456"
+        },
+        {
+          "database": "KEGG",
+          "identifier": "D00358"
+        },
+        {
+          "database": "PUBCHEM",
+          "identifier": "CID:3676"
+        },
+        {
+          "database": "INCHIKEY",
+          "identifier": "NNJVILVZKWQKPM-UHFFFAOYSA-N"
+        },
+        {
+          "database": "CHEMSPIDER",
+          "identifier": "3548"
+        },
+        {
+          "database": "COMPTOX",
+          "identifier": "DTXSID1045166"
+        },
+        {
+          "database": "ChemOnt",
+          "identifier": "CHEMONTID:0004208; Organic compounds; Benzenoids; Benzene and substituted derivatives; Xylenes"
+        }
+      ],
+      "mass": 234.1732133,
+      "names": [
+        "Lidocaine",
+        "2-(diethylamino)-N-(2,6-dimethylphenyl)acetamide"
+      ],
+      "smiles": "CCN(CC)CC(=O)NC1=C(C)C=CC=C1C"
+    },
+    "date": {
+      "created": "2019-05-30 00:00:00 +0000 +0000",
+      "modified": "2019-05-30 00:00:00 +0000 +0000",
+      "updated": "2019-05-30 00:00:00 +0000 +0000"
+    },
+    "deprecated": {},
+    "license": "CC BY",
+    "mass_spectrometry": {
+      "data_processing": [
+        {
+          "subtag": "RECALIBRATE",
+          "value": "identity on assigned fragments and MS1"
+        },
+        {
+          "subtag": "WHOLE",
+          "value": "RMassBank 2.10.1"
+        }
+      ],
+      "focused_ion": [
+        {
+          "subtag": "BASE_PEAK",
+          "value": "235.1804"
+        },
+        {
+          "subtag": "PRECURSOR_M/Z",
+          "value": "235.1805"
+        },
+        {
+          "subtag": "PRECURSOR_TYPE",
+          "value": "[M+H]+"
+        }
+      ]
+    },
+    "peak": {
+      "annotation": {
+        "header": [
+          "m/z",
+          "tentative_formula",
+          "formula_count",
+          "mass",
+          "error(ppm)"
+        ],
+        "values": [
+          [
+            "134.0948",
+            "162.0902",
+            "217.1688",
+            "235.18",
+            "236.1835",
+            "237.1849"
+          ],
+          [
+            "C9H12N+",
+            "C10H12NO+",
+            "C14H21N2+",
+            "C14H23N2O+",
+            "C13[13]CH23N2O+",
+            "C12[13]C2H23N2O+"
+          ],
+          [
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1"
+          ],
+          [
+            "134.0964",
+            "162.0913",
+            "217.1699",
+            "235.1805",
+            "236.1844",
+            "237.1877"
+          ],
+          [
+            "-11.8",
+            "-6.97",
+            "-5.03",
+            "-1.94",
+            "-3.67",
+            "-11.97"
+          ]
+        ]
+      },
+      "numPeak": 6,
+      "peak": {
+        "values": [
+          {
+            "id": 123636,
+            "intensity": 984,
+            "mz": 134.0948028564453,
+            "rel": 5
+          },
+          {
+            "id": 123637,
+            "intensity": 1196,
+            "mz": 162.09019470214844,
+            "rel": 6
+          },
+          {
+            "id": 123638,
+            "intensity": 984,
+            "mz": 217.16879272460938,
+            "rel": 5
+          },
+          {
+            "id": 123639,
+            "intensity": 180396,
+            "mz": 235.17999267578125,
+            "rel": 999
+          },
+          {
+            "id": 123640,
+            "intensity": 33980,
+            "mz": 236.18350219726562,
+            "rel": 188
+          },
+          {
+            "id": 123641,
+            "intensity": 3004,
+            "mz": 237.18490600585938,
+            "rel": 16
+          }
+        ]
+      },
+      "splash": "splash10-000i-0090000000-209a26396e082040c335"
+    },
+    "species": {},
+    "title": "Lidocaine; LC-ESI-QTOF; MS2; CE: 20 eV; R=35000; [M+H]+"
+  }
+]
