@@ -35,7 +35,6 @@ from .fragmentation import (
     ExplicitFragmentationScoring,
     Fragment,
     FragmentCandidate,
-    FragmentationSpectrum,
     FragmentationTree,
     FragmentationTreeFinder,
     FragmentationTreeOptions,
@@ -43,7 +42,7 @@ from .fragmentation import (
     Loss,
     SiriusLikeScoringConfig,
     SiriusLikeScoringTables,
-    SpectrumPeak,
+    find_fragmentation_tree,
     load_db_paired_formulas,
 )
 
@@ -146,6 +145,7 @@ __all__ = [
 
     # Convenience function
     "find_chnops",
+    "find_fragmentation_tree",
 
     # Core components
     "MassDecomposer",
@@ -168,8 +168,6 @@ __all__ = [
 
     # Fragmentation trees
     "FragmentationTreeFinder",
-    "FragmentationSpectrum",
-    "SpectrumPeak",
     "FragmentCandidate",
     "ExplicitFragmentationScoring",
     "SiriusLikeScoringConfig",

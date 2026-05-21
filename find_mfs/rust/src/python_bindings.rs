@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use pyo3::buffer::{Element, PyBuffer, ReadOnlyCell};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict};
@@ -79,6 +80,70 @@ type PyRawSpectrumTreeTuple = (
     usize,
     f64,
 );
+
+fn validate_peak_buffer<T: Element>(buffer: &PyBuffer<T>) -> PyResult<usize> {
+    if buffer.dimensions() != 2 {
+        return Err(PyValueError::new_err(format!(
+            "peaks must be a 2-D C-contiguous float32 or float64 buffer with shape (n_peaks, 2); got {}-D input",
+            buffer.dimensions()
+        )));
+    }
+    let shape = buffer.shape();
+    if shape[1] != 2 {
+        return Err(PyValueError::new_err(format!(
+            "peaks must have shape (n_peaks, 2); got ({}, {})",
+            shape[0], shape[1]
+        )));
+    }
+    if !buffer.is_c_contiguous() {
+        return Err(PyValueError::new_err(
+            "peaks must be C-contiguous before entering Rust",
+        ));
+    }
+    Ok(shape[0])
+}
+
+fn cells_to_peaks_f64(cells: &[ReadOnlyCell<f64>]) -> Vec<SpectrumPeak> {
+    cells
+        .chunks_exact(2)
+        .map(|pair| SpectrumPeak {
+            mz: pair[0].get(),
+            intensity: pair[1].get(),
+        })
+        .collect()
+}
+
+fn cells_to_peaks_f32(cells: &[ReadOnlyCell<f32>]) -> Vec<SpectrumPeak> {
+    cells
+        .chunks_exact(2)
+        .map(|pair| SpectrumPeak {
+            mz: f64::from(pair[0].get()),
+            intensity: f64::from(pair[1].get()),
+        })
+        .collect()
+}
+
+fn extract_spectrum_peaks(py: Python<'_>, peaks: &Bound<'_, PyAny>) -> PyResult<Vec<SpectrumPeak>> {
+    if let Ok(buffer) = PyBuffer::<f64>::get_bound(peaks) {
+        let peak_count = validate_peak_buffer(&buffer)?;
+        let cells = buffer.as_slice(py).ok_or_else(|| {
+            PyValueError::new_err("peaks must be C-contiguous before entering Rust")
+        })?;
+        debug_assert_eq!(cells.len(), peak_count * 2);
+        return Ok(cells_to_peaks_f64(cells));
+    }
+    if let Ok(buffer) = PyBuffer::<f32>::get_bound(peaks) {
+        let peak_count = validate_peak_buffer(&buffer)?;
+        let cells = buffer.as_slice(py).ok_or_else(|| {
+            PyValueError::new_err("peaks must be C-contiguous before entering Rust")
+        })?;
+        debug_assert_eq!(cells.len(), peak_count * 2);
+        return Ok(cells_to_peaks_f32(cells));
+    }
+    Err(PyValueError::new_err(
+        "peaks must be a C-contiguous float32 or float64 buffer with shape (n_peaks, 2)",
+    ))
+}
 
 struct PyIsotopeMatchInput {
     enable_iso_prefilter: bool,
@@ -1234,7 +1299,7 @@ impl PyRustFormulaFinder {
         precursor_mz: f64,
         precursor_formula: String,
         precursor_ion: String,
-        peaks: Vec<(f64, f64)>,
+        peaks: Bound<'_, PyAny>,
         config: Bound<'_, PyAny>,
         reduce_graph: bool,
         minimal_score: Option<f64>,
@@ -1280,7 +1345,7 @@ impl PyRustFormulaFinder {
         precursor_mz: f64,
         precursor_formula: String,
         precursor_ion: String,
-        peaks: Vec<(f64, f64)>,
+        peaks: Bound<'_, PyAny>,
         config: Bound<'_, PyAny>,
         reduce_graph: bool,
         minimal_score: Option<f64>,
@@ -1291,10 +1356,7 @@ impl PyRustFormulaFinder {
     ) -> PyResult<PyRustFragmentationTreeResult> {
         let config = extract_sirius_like_config(&config)?;
         let solver = TreeSolver::from_name(&solver).map_err(PyValueError::new_err)?;
-        let peaks = peaks
-            .into_iter()
-            .map(|(mz, intensity)| SpectrumPeak { mz, intensity })
-            .collect();
+        let peaks = extract_spectrum_peaks(py, &peaks)?;
         let options = TreeSolveOptions {
             minimal_score,
             time_limit_seconds,

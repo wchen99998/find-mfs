@@ -5,23 +5,25 @@ import json
 import os
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from find_mfs.fragmentation import (
     ExplicitFragmentationScoring,
     Fragment,
     FragmentCandidate,
-    FragmentationSpectrum,
     FragmentationTree,
     FragmentationTreeFinder,
     FragmentationTreeOptions,
     SiriusLikeScoringConfig,
     SiriusLikeScoringTables,
-    SpectrumPeak,
+    find_fragmentation_tree,
     load_db_paired_formulas,
 )
-from find_mfs.fragmentation.finder import _GeneratedCandidate
+from find_mfs.fragmentation.finder import _GeneratedCandidate, _normalize_peaks
+from find_mfs.fragmentation.results import SpectrumPeak
 from find_mfs.fragmentation.scoring import SiriusLikeScorer
+from find_mfs.fragmentation.spectrum import FragmentationSpectrum
 
 rust = pytest.importorskip("find_mfs._rust")
 
@@ -56,6 +58,7 @@ def test_public_fragmentation_api_is_exported_from_package():
         FragmentationTreeFinder as TopLevelFragmentationTreeFinder,
         SiriusLikeScoringConfig as TopLevelSiriusLikeScoringConfig,
         SiriusLikeScoringTables as TopLevelSiriusLikeScoringTables,
+        find_fragmentation_tree as top_level_find_fragmentation_tree,
         load_db_paired_formulas as top_level_load_db_paired_formulas,
     )
 
@@ -65,6 +68,7 @@ def test_public_fragmentation_api_is_exported_from_package():
     assert TopLevelSiriusLikeScoringConfig is SiriusLikeScoringConfig
     assert TopLevelSiriusLikeScoringTables is SiriusLikeScoringTables
     assert top_level_load_db_paired_formulas is load_db_paired_formulas
+    assert top_level_find_fragmentation_tree is find_fragmentation_tree
 
 
 def test_sirius_like_db_paired_score_requires_explicit_formula_set():
@@ -494,7 +498,7 @@ def test_rust_fragmentation_tree_python_bridge_solves_colorful_tree():
 def test_public_fragmentation_tree_api_solves_colorful_tree():
     finder, root, fragments, scoring = _small_explicit_tree_inputs()
 
-    tree = finder.find_tree(
+    tree = finder.solve_tree(
         root,
         fragments,
         scoring=scoring,
@@ -527,7 +531,7 @@ def test_fragmentation_tree_solver_option_rejects_unknown_name():
     finder, root, fragments, scoring = _small_explicit_tree_inputs()
 
     with pytest.raises(ValueError, match="unknown fragmentation tree solver"):
-        finder.find_tree(
+        finder.solve_tree(
             root,
             fragments,
             scoring=scoring,
@@ -542,13 +546,13 @@ def test_fragmentation_tree_solver_option_rejects_unknown_name():
 def test_fragmentation_tree_gurobi_solver_matches_highs_on_explicit_tree():
     finder, root, fragments, scoring = _small_explicit_tree_inputs()
 
-    highs = finder.find_tree(
+    highs = finder.solve_tree(
         root,
         fragments,
         scoring=scoring,
         options=FragmentationTreeOptions(solver="highs", threads=1),
     )
-    gurobi = finder.find_tree(
+    gurobi = finder.solve_tree(
         root,
         fragments,
         scoring=scoring,
@@ -613,6 +617,86 @@ NOVOBIOCIN_SIRIUS_V6_RAW_REFERENCE = {
 }
 
 MASSBANK_FIXTURE = Path(__file__).parent / "data" / "fragmentation_massbank_records.json"
+
+
+def _peaks_from_massbank_record(record):
+    focused_ion = record.get("mass_spectrometry", {}).get("focused_ion", [])
+    focused = {
+        item.get("subtag"): item.get("value")
+        for item in focused_ion
+        if isinstance(item, dict)
+    }
+    precursor_mz = float(focused["PRECURSOR_M/Z"])
+    precursor_ion = str(focused.get("PRECURSOR_TYPE", "[M+H]+"))
+    compound = record.get("compound", {})
+    peak_values = record.get("peak", {}).get("peak", {}).get("values", [])
+    peaks = np.asarray(
+        [
+            (
+                float(peak["mz"]),
+                float(peak.get("intensity", peak.get("rel", 0.0))),
+            )
+            for peak in peak_values
+        ],
+        dtype=np.float64,
+    ).reshape((-1, 2))
+    names = compound.get("names", [])
+    metadata = {
+        "name": names[0] if names else record.get("title"),
+        "accession": record.get("accession"),
+        "title": record.get("title"),
+        "splash": record.get("peak", {}).get("splash"),
+    }
+    return peaks, precursor_mz, compound.get("formula"), precursor_ion, metadata
+
+
+def _massbank_inputs(accession: str):
+    records = {
+        record["accession"]: record
+        for record in json.loads(MASSBANK_FIXTURE.read_text())
+    }
+    return _peaks_from_massbank_record(records[accession])
+
+
+def _find_tree_from_massbank_inputs(finder, inputs, **kwargs):
+    peaks, precursor_mz, precursor_formula, precursor_ion, _metadata = inputs
+    return finder.find_tree(
+        peaks,
+        precursor_mz=precursor_mz,
+        precursor_formula=precursor_formula,
+        precursor_ion=precursor_ion,
+        **kwargs,
+    )
+
+
+def _find_tree_result_from_massbank_inputs(finder, inputs, **kwargs):
+    peaks, precursor_mz, precursor_formula, precursor_ion, _metadata = inputs
+    return finder.find_tree_result(
+        peaks,
+        precursor_mz=precursor_mz,
+        precursor_formula=precursor_formula,
+        precursor_ion=precursor_ion,
+        **kwargs,
+    )
+
+
+def _python_spectrum_from_massbank_inputs(inputs):
+    peaks, precursor_mz, precursor_formula, precursor_ion, metadata = inputs
+    return FragmentationSpectrum(
+        precursor_mz=precursor_mz,
+        precursor_formula=precursor_formula,
+        precursor_ion=precursor_ion,
+        peaks=[
+            SpectrumPeak(float(mz), float(intensity), peak_id=index)
+            for index, (mz, intensity) in enumerate(peaks)
+        ],
+        name=metadata.get("name"),
+        accession=metadata.get("accession"),
+        metadata={
+            "title": metadata.get("title"),
+            "splash": metadata.get("splash"),
+        },
+    )
 
 
 def _novobiocin_sirius_inputs():
@@ -741,7 +825,7 @@ def test_novobiocin_sirius_scored_tree_matches_reference():
 def test_public_api_novobiocin_sirius_scored_tree_matches_reference():
     finder, root, fragments, scoring = _novobiocin_public_inputs()
 
-    tree = finder.find_tree(root, fragments, scoring=scoring)
+    tree = finder.solve_tree(root, fragments, scoring=scoring)
 
     assert tree.tree_score == pytest.approx(26.827442867406685)
     assert tree.is_optimal
@@ -865,16 +949,10 @@ SIRIUS_RAW_REFERENCE_TARGETS = {
 
 
 def test_raw_massbank_novobiocin_matches_sirius_v6_tree():
-    records = {
-        record["accession"]: record
-        for record in json.loads(MASSBANK_FIXTURE.read_text())
-    }
-    spectrum = FragmentationSpectrum.from_massbank_record(
-        records["MSBNK-Athens_Univ-AU116706"]
-    )
+    inputs = _massbank_inputs("MSBNK-Athens_Univ-AU116706")
     finder = FragmentationTreeFinder("CHNO")
 
-    tree = finder.find_tree_from_spectrum(spectrum)
+    tree = _find_tree_from_massbank_inputs(finder, inputs)
     selected = {fragment.formula for fragment in tree.fragments}
     selected_losses = {
         (loss.source.formula, loss.target.formula, loss.formula)
@@ -891,17 +969,12 @@ def test_raw_massbank_novobiocin_matches_sirius_v6_tree():
 
 
 def test_raw_massbank_novobiocin_strict_parity_matches_with_external_db_map():
-    records = {
-        record["accession"]: record
-        for record in json.loads(MASSBANK_FIXTURE.read_text())
-    }
-    spectrum = FragmentationSpectrum.from_massbank_record(
-        records["MSBNK-Athens_Univ-AU116706"]
-    )
+    inputs = _massbank_inputs("MSBNK-Athens_Univ-AU116706")
     finder = FragmentationTreeFinder("CHNO")
 
-    tree = finder.find_tree_from_spectrum(
-        spectrum,
+    tree = _find_tree_from_massbank_inputs(
+        finder,
+        inputs,
         scoring_config=SiriusLikeScoringConfig(
             strict_sirius_radical_parity=True,
             db_paired_formulas=frozenset({"C31H36N2O11", "C22H21NO6"}),
@@ -929,6 +1002,118 @@ def _tree_signature(tree):
     )
 
 
+class _DlpackOnly:
+    def __init__(self, array):
+        self._array = array
+
+    def __dlpack__(self, *args, **kwargs):
+        return self._array.__dlpack__(*args, **kwargs)
+
+    def __dlpack_device__(self):
+        return self._array.__dlpack_device__()
+
+
+class _FakeGpuDlpack:
+    def __dlpack_device__(self):
+        return (2, 0)
+
+    def __dlpack__(self, *args, **kwargs):
+        raise AssertionError("__dlpack__ should not be called for non-CPU tensors")
+
+
+def test_raw_peak_input_variants_match_same_tree_signature():
+    peaks, precursor_mz, precursor_formula, precursor_ion, _metadata = _massbank_inputs(
+        "MSBNK-Athens_Univ-AU276702"
+    )
+    finder = FragmentationTreeFinder("CHNO")
+    baseline = finder.find_tree(
+        peaks,
+        precursor_mz=precursor_mz,
+        precursor_formula=precursor_formula,
+        precursor_ion=precursor_ion,
+        copy=False,
+    )
+    variants = [
+        peaks.astype(np.float32),
+        (peaks[:, 0], peaks[:, 1]),
+        [tuple(row) for row in peaks.tolist()],
+        _DlpackOnly(np.ascontiguousarray(peaks)),
+    ]
+
+    for variant in variants:
+        tree = finder.find_tree(
+            variant,
+            precursor_mz=precursor_mz,
+            precursor_formula=precursor_formula,
+            precursor_ion=precursor_ion,
+        )
+        assert _tree_signature(tree) == _tree_signature(baseline)
+
+    top_level_tree = find_fragmentation_tree(
+        peaks,
+        elements="CHNO",
+        precursor_mz=precursor_mz,
+        precursor_formula=precursor_formula,
+        precursor_ion=precursor_ion,
+        copy=False,
+    )
+    assert _tree_signature(top_level_tree) == _tree_signature(baseline)
+
+
+def test_peak_normalizer_rejects_raw_dlpack_capsule():
+    capsule = np.asarray([[1.0, 2.0]], dtype=np.float64).__dlpack__()
+
+    with pytest.raises(TypeError, match="original CPU tensor object"):
+        _normalize_peaks(capsule)
+
+
+def test_peak_normalizer_rejects_non_cpu_dlpack_before_computation():
+    with pytest.raises(ValueError, match="only CPU DLPack"):
+        _normalize_peaks(_FakeGpuDlpack())
+
+
+@pytest.mark.parametrize(
+    ("peaks", "message"),
+    [
+        (np.asarray([1.0, 2.0]), "2-D"),
+        (np.ones((2, 3), dtype=np.float64), "ambiguous"),
+        (np.ones((3, 3), dtype=np.float64), "shape"),
+        (np.ones((1, 3, 2), dtype=np.float64), "batched"),
+    ],
+)
+def test_peak_normalizer_rejects_unsupported_shapes(peaks, message):
+    with pytest.raises(ValueError, match=message):
+        _normalize_peaks(peaks)
+
+
+def test_peak_normalizer_copy_false_rejects_required_normalization():
+    non_contiguous = np.asfortranarray(np.ones((3, 2), dtype=np.float64))
+    integer_peaks = np.ones((3, 2), dtype=np.int64)
+
+    with pytest.raises(ValueError, match="C-contiguous"):
+        _normalize_peaks(non_contiguous, copy=False)
+    with pytest.raises(ValueError, match="float32 or float64"):
+        _normalize_peaks(integer_peaks, copy=False)
+
+    assert _normalize_peaks(non_contiguous).flags.c_contiguous
+    normalized = _normalize_peaks(integer_peaks)
+    assert normalized.dtype == np.float64
+    assert normalized.flags.c_contiguous
+
+
+@pytest.mark.parametrize(
+    ("peaks", "message"),
+    [
+        (np.asarray([[float("nan"), 1.0]]), "finite"),
+        (np.asarray([[1.0, float("inf")]]), "finite"),
+        (np.asarray([[1.0, -1.0]]), "non-negative"),
+    ],
+)
+def test_peak_normalizer_validates_peak_values(peaks, message):
+    with pytest.raises(ValueError, match=message):
+        _normalize_peaks(peaks)
+
+
 @pytest.mark.parametrize(
     "accession",
     [
@@ -942,11 +1127,12 @@ def test_raw_spectrum_rust_end_to_end_matches_python_pipeline(accession):
         record["accession"]: record
         for record in json.loads(MASSBANK_FIXTURE.read_text())
     }
-    spectrum = FragmentationSpectrum.from_massbank_record(records[accession])
+    inputs = _peaks_from_massbank_record(records[accession])
+    spectrum = _python_spectrum_from_massbank_inputs(inputs)
     finder = FragmentationTreeFinder("CHNO")
 
-    python_tree = finder.find_tree_from_spectrum(spectrum, implementation="python")
-    rust_tree = finder.find_tree_from_spectrum(spectrum, implementation="rust")
+    python_tree = finder._find_tree_from_spectrum_python(spectrum)
+    rust_tree = _find_tree_from_massbank_inputs(finder, inputs)
 
     assert _tree_signature(rust_tree) == _tree_signature(python_tree)
     assert rust_tree.is_optimal
@@ -959,13 +1145,12 @@ def test_raw_spectrum_rust_result_object_matches_python_pipeline():
         record["accession"]: record
         for record in json.loads(MASSBANK_FIXTURE.read_text())
     }
-    spectrum = FragmentationSpectrum.from_massbank_record(
-        records["MSBNK-Athens_Univ-AU116706"]
-    )
+    inputs = _peaks_from_massbank_record(records["MSBNK-Athens_Univ-AU116706"])
+    spectrum = _python_spectrum_from_massbank_inputs(inputs)
     finder = FragmentationTreeFinder("CHNO")
 
-    python_tree = finder.find_tree_from_spectrum(spectrum, implementation="python")
-    rust_result = finder.find_tree_result_from_spectrum(spectrum)
+    python_tree = finder._find_tree_from_spectrum_python(spectrum)
+    rust_result = _find_tree_result_from_massbank_inputs(finder, inputs)
 
     assert rust_result.root_formula == python_tree.root.formula
     assert rust_result.tree_score == python_tree.tree_score
@@ -988,38 +1173,34 @@ def test_raw_spectrum_rust_result_object_matches_python_pipeline():
 
 
 def test_raw_spectrum_custom_tables_are_loaded_once_into_rust():
-    records = {
-        record["accession"]: record
-        for record in json.loads(MASSBANK_FIXTURE.read_text())
-    }
-    spectrum = FragmentationSpectrum.from_massbank_record(
-        records["MSBNK-Athens_Univ-AU116706"]
-    )
-    baseline = FragmentationTreeFinder("CHNO").find_tree_result_from_spectrum(
-        spectrum
+    inputs = _massbank_inputs("MSBNK-Athens_Univ-AU116706")
+    baseline = _find_tree_result_from_massbank_inputs(
+        FragmentationTreeFinder("CHNO"),
+        inputs,
     )
 
     tables = SiriusLikeScoringTables.default()
     default_finder = FragmentationTreeFinder("CHNO", scoring_tables=tables)
-    default_custom = default_finder.find_tree_result_from_spectrum(spectrum)
+    default_custom = _find_tree_result_from_massbank_inputs(default_finder, inputs)
     assert default_custom.tree_score == baseline.tree_score
 
     tables.common_fragments["C12H12O2"] = (
         tables.common_fragments.get("C12H12O2", 0.0) + 5.0
     )
-    repeated_default = default_finder.find_tree_result_from_spectrum(spectrum)
+    repeated_default = _find_tree_result_from_massbank_inputs(default_finder, inputs)
     assert repeated_default.tree_score == default_custom.tree_score
 
     finder = FragmentationTreeFinder("CHNO", scoring_tables=tables)
-    custom = finder.find_tree_result_from_spectrum(spectrum)
+    custom = _find_tree_result_from_massbank_inputs(finder, inputs)
     assert custom.tree_score > baseline.tree_score + 1.0
 
     tables.common_fragments["C12H12O2"] += 1000.0
-    repeated = finder.find_tree_result_from_spectrum(spectrum)
+    repeated = _find_tree_result_from_massbank_inputs(finder, inputs)
     assert repeated.tree_score == custom.tree_score
 
     with pytest.raises(ValueError, match="custom scoring_tables"):
-        finder.find_tree_from_spectrum(spectrum, implementation="python")
+        spectrum = _python_spectrum_from_massbank_inputs(inputs)
+        finder._find_tree_from_spectrum_python(spectrum)
 
 
 @pytest.mark.parametrize(
@@ -1031,22 +1212,17 @@ def test_raw_massbank_reference_targets_match_sirius_v6_trees(
     accession,
     reference,
 ):
-    records = {
-        record["accession"]: record
-        for record in json.loads(MASSBANK_FIXTURE.read_text())
-    }
-    record = records[accession]
-    spectrum = FragmentationSpectrum.from_massbank_record(record)
+    inputs = _massbank_inputs(accession)
     finder = FragmentationTreeFinder("CHNO")
 
-    tree = finder.find_tree_from_spectrum(spectrum)
+    tree = _find_tree_from_massbank_inputs(finder, inputs)
     selected = {fragment.formula for fragment in tree.fragments}
     selected_losses = {
         (loss.source.formula, loss.target.formula, loss.formula)
         for loss in tree.losses
     }
 
-    assert tree.root.formula == spectrum.precursor_formula
+    assert tree.root.formula == inputs[2]
     assert tree.is_optimal
     assert len(tree.losses) == len(tree.fragments) - 1
     assert selected == reference["formulas"]

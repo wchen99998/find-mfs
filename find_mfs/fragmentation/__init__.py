@@ -2,7 +2,7 @@
 Fragmentation tree construction and optimization.
 """
 
-from .finder import FragmentationTreeFinder
+from .finder import FragmentationTreeFinder, find_fragmentation_tree
 from .results import (
     ExplicitFragmentationScoring,
     Fragment,
@@ -11,19 +11,16 @@ from .results import (
     FragmentationTreeOptions,
     FragmentationTreeSearchResults,
     Loss,
-    SpectrumPeak,
 )
 from .scoring import (
     SiriusLikeScoringConfig,
     SiriusLikeScoringTables,
     load_db_paired_formulas,
 )
-from .spectrum import FragmentationSpectrum
 
 __all__ = [
     "FragmentationTreeFinder",
-    "FragmentationSpectrum",
-    "SpectrumPeak",
+    "find_fragmentation_tree",
     "FragmentCandidate",
     "ExplicitFragmentationScoring",
     "SiriusLikeScoringConfig",

@@ -3,6 +3,9 @@ from __future__ import annotations
 import importlib
 from dataclasses import dataclass, replace
 from collections.abc import Iterable, Sequence
+from typing import Any
+
+import numpy as np
 
 from find_mfs.core.finder import FormulaFinder
 
@@ -24,6 +27,167 @@ from .scoring import (
 from .spectrum import FragmentationSpectrum
 
 
+_DLPACK_CPU_DEVICE_TYPE = 1
+_SUPPORTED_PEAK_DTYPES = (np.dtype(np.float32), np.dtype(np.float64))
+
+
+def _normalize_peaks(peaks: Any, copy: bool | None = None) -> np.ndarray:
+    """
+    Normalize caller peak data to one CPU C-contiguous numeric array.
+
+    The returned array has shape ``(n_peaks, 2)`` with columns
+    ``[mz, intensity]`` and dtype ``float32`` or ``float64`` unless a dtype
+    conversion was needed. Raw DLPack capsules are intentionally rejected:
+    NumPy and PyTorch both require passing the original tensor object so the
+    producer can manage capsule lifetime correctly.
+    """
+    if type(peaks).__name__ == "PyCapsule":
+        raise TypeError(
+            "raw DLPack PyCapsule inputs are not supported; pass the original "
+            "CPU tensor object implementing __dlpack__ instead"
+        )
+
+    if hasattr(peaks, "__dlpack__"):
+        arr = _array_from_dlpack(peaks, copy=copy)
+    elif isinstance(peaks, tuple) and len(peaks) == 2:
+        arr = _array_from_split_peak_arrays(peaks, copy=copy)
+    else:
+        arr = np.asarray(peaks)
+        arr = _normalize_peak_array(arr, copy=copy)
+
+    _validate_peak_values(arr)
+    return arr
+
+
+def _array_from_dlpack(peaks: Any, copy: bool | None) -> np.ndarray:
+    if not hasattr(peaks, "__dlpack_device__"):
+        raise TypeError(
+            "DLPack peak inputs must implement both __dlpack__ and "
+            "__dlpack_device__"
+        )
+    device = peaks.__dlpack_device__()
+    try:
+        device_type = int(device[0])
+    except (TypeError, ValueError, IndexError):
+        raise TypeError("__dlpack_device__ must return (device_type, device_id)")
+    if device_type != _DLPACK_CPU_DEVICE_TYPE:
+        raise ValueError(
+            "only CPU DLPack peak tensors are supported; move the tensor to CPU "
+            "before calling find_tree"
+        )
+
+    try:
+        arr = np.from_dlpack(peaks, device="cpu", copy=False)
+    except TypeError:
+        arr = np.from_dlpack(peaks)
+    return _normalize_peak_array(arr, copy=copy)
+
+
+def _array_from_split_peak_arrays(
+    peaks: tuple[Any, Any],
+    copy: bool | None,
+) -> np.ndarray:
+    mz = np.asarray(peaks[0])
+    intensity = np.asarray(peaks[1])
+    if mz.ndim != 1 or intensity.ndim != 1:
+        raise ValueError("tuple peak input must contain two matching 1-D arrays")
+    if mz.shape != intensity.shape:
+        raise ValueError("mz and intensity arrays must have matching shape")
+    if copy is False:
+        raise ValueError(
+            "copy=False requires a single 2-D C-contiguous float32/float64 "
+            "array; tuple peak inputs require normalization"
+        )
+    dtype = (
+        np.float64
+        if copy is True
+        or mz.dtype not in _SUPPORTED_PEAK_DTYPES
+        or intensity.dtype not in _SUPPORTED_PEAK_DTYPES
+        else np.result_type(mz.dtype, intensity.dtype)
+    )
+    arr = np.empty((mz.shape[0], 2), dtype=dtype)
+    arr[:, 0] = mz
+    arr[:, 1] = intensity
+    return arr
+
+
+def _normalize_peak_array(arr: np.ndarray, copy: bool | None) -> np.ndarray:
+    _validate_peak_shape(arr)
+    if copy is False:
+        if arr.dtype not in _SUPPORTED_PEAK_DTYPES:
+            raise ValueError(
+                "copy=False requires peak arrays with dtype float32 or float64"
+            )
+        if not arr.flags.c_contiguous:
+            raise ValueError("copy=False requires a C-contiguous peak array")
+        return arr
+
+    if copy is True:
+        return np.ascontiguousarray(arr, dtype=np.float64)
+
+    if arr.dtype not in _SUPPORTED_PEAK_DTYPES:
+        return np.ascontiguousarray(arr, dtype=np.float64)
+    if not arr.flags.c_contiguous:
+        return np.ascontiguousarray(arr)
+    return arr
+
+
+def _validate_peak_shape(arr: np.ndarray) -> None:
+    if arr.ndim == 3:
+        raise ValueError(
+            "batched/3-D spectra are not supported; pass one spectrum with "
+            "shape (n_peaks, 2)"
+        )
+    if arr.ndim != 2:
+        raise ValueError(
+            f"peaks must be a 2-D array with shape (n_peaks, 2); got "
+            f"{arr.ndim}-D input"
+        )
+    if arr.shape[1] != 2:
+        if arr.shape[0] == 2:
+            raise ValueError(
+                "ambiguous peak layout (2, n_peaks) is not supported; pass "
+                "shape (n_peaks, 2) with columns [mz, intensity]"
+            )
+        raise ValueError(
+            f"peaks must have shape (n_peaks, 2); got {tuple(arr.shape)}"
+        )
+
+
+def _validate_peak_values(arr: np.ndarray) -> None:
+    try:
+        finite = np.isfinite(arr)
+    except TypeError:
+        raise ValueError("peak m/z and intensity values must be numeric")
+    if not bool(finite.all()):
+        raise ValueError("peak m/z and intensity values must be finite")
+    if bool((arr[:, 1] < 0).any()):
+        raise ValueError("peak intensities must be non-negative")
+
+
+def find_fragmentation_tree(
+    peaks: Any,
+    *,
+    precursor_mz: float,
+    precursor_formula: str,
+    elements: str | Iterable[str] = "CHNOPS",
+    precursor_ion: str = "[M+H]+",
+    scoring_config: SiriusLikeScoringConfig | None = None,
+    options: FragmentationTreeOptions | None = None,
+    copy: bool | None = None,
+) -> FragmentationTree:
+    finder = FragmentationTreeFinder(elements)
+    return finder.find_tree(
+        peaks,
+        precursor_mz=precursor_mz,
+        precursor_formula=precursor_formula,
+        precursor_ion=precursor_ion,
+        scoring_config=scoring_config,
+        options=options,
+        copy=copy,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _GeneratedCandidate:
     candidate: FragmentCandidate
@@ -37,8 +201,8 @@ class FragmentationTreeFinder:
 
     The current implementation uses the Rust backend and solves the exact
     colorful subtree ILP with HiGHS. Candidate generation and scoring can be
-    kept explicit by passing ``FragmentCandidate`` values and an
-    ``ExplicitFragmentationScoring`` object.
+    kept explicit with ``solve_tree`` by passing ``FragmentCandidate`` values
+    and an ``ExplicitFragmentationScoring`` object.
     """
 
     def __init__(
@@ -59,122 +223,105 @@ class FragmentationTreeFinder:
 
     def find_tree(
         self,
-        root_candidates: Sequence[FragmentCandidate],
-        fragment_candidates: Sequence[FragmentCandidate],
-        scoring: ExplicitFragmentationScoring | None = None,
-        options: FragmentationTreeOptions | None = None,
-        allowed_ionizations: Sequence[str] | None = None,
-    ) -> FragmentationTree:
-        return self.solve_tree(
-            root_candidates=root_candidates,
-            fragment_candidates=fragment_candidates,
-            scoring=scoring,
-            options=options,
-            allowed_ionizations=allowed_ionizations,
-        )
-
-    def find_tree_from_spectrum(
-        self,
-        spectrum: FragmentationSpectrum,
+        peaks: Any,
+        *,
+        precursor_mz: float,
+        precursor_formula: str,
+        precursor_ion: str = "[M+H]+",
         scoring_config: SiriusLikeScoringConfig | None = None,
         options: FragmentationTreeOptions | None = None,
-        implementation: str = "rust",
+        copy: bool | None = None,
     ) -> FragmentationTree:
         """
-        Generate candidates and SIRIUS-like scores from a raw MS/MS spectrum.
+        Generate a fragmentation tree from one raw CPU spectrum.
 
-        This uses hard-coded default SIRIUS-like scalar scorers and the existing
-        formula finder for peak decompositions. It intentionally does not load
-        custom SIRIUS profile JSON files.
+        ``peaks`` must represent ``(n_peaks, 2)`` numeric data with columns
+        ``[mz, intensity]``. CPU DLPack-capable tensor objects, NumPy/buffer
+        arrays, ``(mz_array, intensity_array)`` tuples, and simple sequences of
+        pairs are accepted.
         """
-        if spectrum.precursor_formula is None:
-            raise ValueError("spectrum.precursor_formula is required")
-        if spectrum.precursor_ion != "[M+H]+":
+        if precursor_formula is None:
+            raise ValueError("precursor_formula is required")
+        if precursor_ion != "[M+H]+":
             raise ValueError(
                 "raw spectrum fragmentation trees currently support only [M+H]+"
             )
 
+        peak_array = _normalize_peaks(peaks, copy=copy)
         config = SiriusLikeScoringConfig() if scoring_config is None else scoring_config
-        if implementation == "rust":
-            tree = self._find_tree_from_spectrum_rust(spectrum, config, options)
-            tree.query_params.update(
-                {
-                    "spectrum_name": spectrum.name,
-                    "spectrum_accession": spectrum.accession,
-                    "precursor_mz": spectrum.precursor_mz,
-                    "precursor_formula": spectrum.precursor_formula,
-                    "precursor_ion": spectrum.precursor_ion,
-                    "scoring": "sirius_like_default",
-                    "implementation": "rust",
-                }
-            )
-            return tree
-        if implementation != "python":
-            raise ValueError(
-                f"Unknown raw-spectrum implementation {implementation!r}. "
-                "Expected 'python' or 'rust'."
-            )
-        if self.scoring_tables is not None:
-            raise ValueError(
-                "custom scoring_tables are supported only by the Rust "
-                "raw-spectrum implementation"
-            )
-        if config.estimate_tree_size:
-            tree = self._find_tree_from_spectrum_with_tree_size_estimation(
-                spectrum,
-                config,
-                options,
-            )
-        else:
-            tree = self._find_tree_from_spectrum_once(spectrum, config, options)
+        tree = self._find_tree_from_peaks_rust(
+            peak_array,
+            precursor_mz=float(precursor_mz),
+            precursor_formula=str(precursor_formula),
+            precursor_ion=str(precursor_ion),
+            config=config,
+            options=options,
+        )
         tree.query_params.update(
             {
-                "spectrum_name": spectrum.name,
-                "spectrum_accession": spectrum.accession,
-                "precursor_mz": spectrum.precursor_mz,
-                "precursor_formula": spectrum.precursor_formula,
-                "precursor_ion": spectrum.precursor_ion,
+                "precursor_mz": float(precursor_mz),
+                "precursor_formula": str(precursor_formula),
+                "precursor_ion": str(precursor_ion),
                 "scoring": "sirius_like_default",
-                "implementation": "python",
+                "implementation": "rust",
             }
         )
         return tree
 
-    def find_tree_result_from_spectrum(
+    def find_tree_result(
         self,
-        spectrum: FragmentationSpectrum,
+        peaks: Any,
+        *,
+        precursor_mz: float,
+        precursor_formula: str,
+        precursor_ion: str = "[M+H]+",
         scoring_config: SiriusLikeScoringConfig | None = None,
         options: FragmentationTreeOptions | None = None,
+        copy: bool | None = None,
     ):
         """
-        Return the Rust-owned raw-spectrum tree result.
+        Return the Rust-owned raw-spectrum tree result for one CPU spectrum.
 
         This is the lowest-overhead public raw-spectrum path: caller data goes
         into Rust and the selected tree stays in a PyO3 result object. Use
-        ``find_tree_from_spectrum`` when the legacy Python ``FragmentationTree``
-        dataclass is needed.
+        ``find_tree`` when the Python ``FragmentationTree`` dataclass is needed.
         """
-        if spectrum.precursor_formula is None:
+        if precursor_formula is None:
             raise ValueError("raw spectrum tree scoring requires precursor_formula")
-        if spectrum.precursor_ion != "[M+H]+":
+        if precursor_ion != "[M+H]+":
             raise ValueError(
                 "raw spectrum fragmentation trees currently support only [M+H]+"
             )
+        peak_array = _normalize_peaks(peaks, copy=copy)
         config = SiriusLikeScoringConfig() if scoring_config is None else scoring_config
         options = FragmentationTreeOptions() if options is None else options
-        return self._find_tree_result_from_spectrum_rust(spectrum, config, options)
+        return self._find_tree_result_from_peaks_rust(
+            peak_array,
+            precursor_mz=float(precursor_mz),
+            precursor_formula=str(precursor_formula),
+            precursor_ion=str(precursor_ion),
+            config=config,
+            options=options,
+        )
 
-    def _find_tree_from_spectrum_rust(
+    def _find_tree_from_peaks_rust(
         self,
-        spectrum: FragmentationSpectrum,
+        peaks: np.ndarray,
+        *,
+        precursor_mz: float,
+        precursor_formula: str,
+        precursor_ion: str,
         config: SiriusLikeScoringConfig,
         options: FragmentationTreeOptions | None,
     ) -> FragmentationTree:
         options = FragmentationTreeOptions() if options is None else options
-        rust_result = self._find_tree_result_from_spectrum_rust(
-            spectrum,
-            config,
-            options,
+        rust_result = self._find_tree_result_from_peaks_rust(
+            peaks,
+            precursor_mz=precursor_mz,
+            precursor_formula=precursor_formula,
+            precursor_ion=precursor_ion,
+            config=config,
+            options=options,
         )
         (
             tree_score,
@@ -244,7 +391,7 @@ class FragmentationTreeFinder:
             query_params={
                 "elements": tuple(self.element_symbols),
                 "backend": self.backend,
-                "allowed_ionizations": (spectrum.precursor_ion,),
+                "allowed_ionizations": (precursor_ion,),
                 "reduce_graph": options.reduce_graph,
                 "minimal_score": options.minimal_score,
                 "time_limit_seconds": options.time_limit_seconds,
@@ -254,9 +401,13 @@ class FragmentationTreeFinder:
             },
         )
 
-    def _find_tree_result_from_spectrum_rust(
+    def _find_tree_result_from_peaks_rust(
         self,
-        spectrum: FragmentationSpectrum,
+        peaks: np.ndarray,
+        *,
+        precursor_mz: float,
+        precursor_formula: str,
+        precursor_ion: str,
         config: SiriusLikeScoringConfig,
         options: FragmentationTreeOptions,
     ):
@@ -270,10 +421,10 @@ class FragmentationTreeFinder:
             )
         )
         return rust_finder.find_fragmentation_tree_result_from_spectrum_raw(
-            precursor_mz=spectrum.precursor_mz,
-            precursor_formula=spectrum.precursor_formula,
-            precursor_ion=spectrum.precursor_ion,
-            peaks=[(peak.mz, peak.intensity) for peak in spectrum.peaks],
+            precursor_mz=precursor_mz,
+            precursor_formula=precursor_formula,
+            precursor_ion=precursor_ion,
+            peaks=peaks,
             scoring_config=rust_config,
             reduce_graph=options.reduce_graph,
             minimal_score=options.minimal_score,
@@ -281,6 +432,45 @@ class FragmentationTreeFinder:
             threads=options.threads,
             solver=options.solver,
         )
+
+    def _find_tree_from_spectrum_python(
+        self,
+        spectrum: FragmentationSpectrum,
+        scoring_config: SiriusLikeScoringConfig | None = None,
+        options: FragmentationTreeOptions | None = None,
+    ) -> FragmentationTree:
+        if spectrum.precursor_formula is None:
+            raise ValueError("spectrum.precursor_formula is required")
+        if spectrum.precursor_ion != "[M+H]+":
+            raise ValueError(
+                "raw spectrum fragmentation trees currently support only [M+H]+"
+            )
+        if self.scoring_tables is not None:
+            raise ValueError(
+                "custom scoring_tables are supported only by the Rust "
+                "raw-spectrum implementation"
+            )
+        config = SiriusLikeScoringConfig() if scoring_config is None else scoring_config
+        if config.estimate_tree_size:
+            tree = self._find_tree_from_spectrum_with_tree_size_estimation(
+                spectrum,
+                config,
+                options,
+            )
+        else:
+            tree = self._find_tree_from_spectrum_once(spectrum, config, options)
+        tree.query_params.update(
+            {
+                "spectrum_name": spectrum.name,
+                "spectrum_accession": spectrum.accession,
+                "precursor_mz": spectrum.precursor_mz,
+                "precursor_formula": spectrum.precursor_formula,
+                "precursor_ion": spectrum.precursor_ion,
+                "scoring": "sirius_like_default",
+                "implementation": "python",
+            }
+        )
+        return tree
 
     def _get_rust_formula_finder(self):
         if self._rust_formula_finder is None:
@@ -381,7 +571,7 @@ class FragmentationTreeFinder:
             intensity_scale,
         )
 
-        tree = self.find_tree(
+        tree = self.solve_tree(
             [root_candidate],
             fragment_candidates,
             scoring=scoring,

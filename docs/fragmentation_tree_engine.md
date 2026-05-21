@@ -7,7 +7,7 @@ used for validation.
 
 The fragmentation-tree API follows the same shape as the formula finder:
 instantiate a finder with an element alphabet, pass explicit inputs or a
-spectrum object, and receive a result object with table helpers.
+raw peak array, and receive a result object with table helpers.
 
 ```python
 from find_mfs import (
@@ -18,7 +18,7 @@ from find_mfs import (
 )
 
 finder = FragmentationTreeFinder("CHNO")
-tree = finder.find_tree(
+tree = finder.solve_tree(
     root_candidates=[
         FragmentCandidate("C4H8", 56.0, score=1.0, peak_id=0, color=0),
     ],
@@ -31,7 +31,7 @@ tree = finder.find_tree(
         peak_pair_scores={(0, 1): 1.0, (1, 2): 2.0},
         loss_scores={("C4H8", "C3H6"): 8.0, ("C3H6", "C2H4"): 14.0},
     ),
-    options=FragmentationTreeOptions(threads=1),
+    options=FragmentationTreeOptions(threads=1, solver="highs"),
 )
 
 print(tree.tree_score)
@@ -51,59 +51,101 @@ This explicit path is the stable engine boundary for future integrations:
 - `fragment_scores` adds formula-level terms independent of the chosen parent.
 - `loss_scores` adds parent-formula to child-formula terms.
 - `FragmentationTreeOptions` carries solver controls such as graph reduction,
-  time limit, thread count, and optional minimum objective.
+  time limit, thread count, optional minimum objective, and solver selection.
+
+## Solver Backends
+
+`FragmentationTreeOptions(solver="highs")` is the default and uses
+`good_lp` with HiGHS. This path is the portable open-source backend and is the
+one CI should rely on.
+
+`FragmentationTreeOptions(solver="gurobi")` uses the same graph, variables,
+objective, and constraints, but solves them with Gurobi. It is useful for local
+performance experiments and production deployments that already have a Gurobi
+license:
+
+```python
+tree = FragmentationTreeFinder("CHNO").find_tree(
+    peaks,
+    precursor_mz=613.2392,
+    precursor_formula="C31H36N2O11",
+    options=FragmentationTreeOptions(solver="gurobi", threads=4),
+)
+```
+
+The Gurobi path is compiled behind the Rust `gurobi` feature. A local developer
+build needs the native Gurobi installation visible through `GUROBI_HOME` and a
+license path in `GRB_LICENSE_FILE`:
+
+```bash
+source /etc/profile.d/gurobi.sh
+uv run maturin develop --release \
+  --manifest-path find_mfs/rust/Cargo.toml \
+  --features gurobi
+```
+
+If the extension was built without that feature, asking for
+`solver="gurobi"` raises a `ValueError`. The public option is intentionally a
+plain solver name rather than a Gurobi-specific parameter bundle so callers can
+switch backends without changing the scoring or result API.
 
 ## Raw Spectrum API
 
-Use `find_tree_from_spectrum()` when the input is raw MS/MS peaks and the
-precursor formula is already known.
+Use `find_tree()` when the input is raw MS/MS peaks and the precursor formula
+is already known. The peak input is one CPU spectrum with shape `(n_peaks, 2)`
+and columns `[mz, intensity]`.
 
 ```python
+import numpy as np
+
 from find_mfs import (
-    FragmentationSpectrum,
     FragmentationTreeFinder,
     SiriusLikeScoringTables,
     SiriusLikeScoringConfig,
-    SpectrumPeak,
 )
 
-spectrum = FragmentationSpectrum(
-    name="Novobiocin",
+peaks = np.asarray([
+    [125.0601, 13556],
+    [143.0719, 10078],
+    [189.0925, 999999],
+    [200.0943, 8848],
+    [218.1051, 8628],
+    [613.2512, 64161],
+])
+
+tree = FragmentationTreeFinder("CHNO").find_tree(
+    peaks,
     precursor_mz=613.2392,
     precursor_formula="C31H36N2O11",
-    precursor_ion="[M+H]+",
-    peaks=[
-        SpectrumPeak(125.0601, 13556),
-        SpectrumPeak(143.0719, 10078),
-        SpectrumPeak(189.0925, 999999),
-        SpectrumPeak(200.0943, 8848),
-        SpectrumPeak(218.1051, 8628),
-        SpectrumPeak(613.2512, 64161),
-    ],
-)
-
-tree = FragmentationTreeFinder("CHNO").find_tree_from_spectrum(
-    spectrum,
     scoring_config=SiriusLikeScoringConfig(),
 )
 ```
 
 The public raw-spectrum call defaults to the end-to-end Rust implementation:
 preprocessing, candidate generation, SIRIUS-like scoring, graph construction,
-and the `good_lp`/HiGHS solve all run in Rust. The previous Python orchestration
-path remains available for parity diagnostics:
+and the `good_lp`/HiGHS solve all run in Rust. NumPy arrays, CPU DLPack tensor
+objects, `(mz_array, intensity_array)` tuples, and simple sequences of pairs are
+accepted.
 
 ```python
-python_tree = FragmentationTreeFinder("CHNO").find_tree_from_spectrum(
-    spectrum,
-    implementation="python",
+import torch
+
+torch_peaks = torch.tensor(peaks, dtype=torch.float32, device="cpu")
+tree = FragmentationTreeFinder("CHNO").find_tree(
+    torch_peaks,
+    precursor_mz=613.2392,
+    precursor_formula="C31H36N2O11",
 )
 ```
 
 For the lowest-overhead path, keep the result in Rust:
 
 ```python
-rust_result = FragmentationTreeFinder("CHNO").find_tree_result_from_spectrum(spectrum)
+rust_result = FragmentationTreeFinder("CHNO").find_tree_result(
+    peaks,
+    precursor_mz=613.2392,
+    precursor_formula="C31H36N2O11",
+)
 rust_result.formula_strings()
 rust_result.losses()
 ```
@@ -121,7 +163,11 @@ current = tables.common_fragments.get(formula, 0.0)
 tables.common_fragments[formula] = current + 5.0
 
 finder = FragmentationTreeFinder("CHNO", scoring_tables=tables)
-tree = finder.find_tree_from_spectrum(spectrum)
+tree = finder.find_tree(
+    peaks,
+    precursor_mz=613.2392,
+    precursor_formula="C31H36N2O11",
+)
 ```
 
 Mutating `tables` after the first call does not change an already cached Rust
@@ -130,8 +176,9 @@ intended. This keeps the normal API fast while still exposing a coherent escape
 hatch for caller-owned scoring profiles.
 
 The validation harness `benchmarks/compare_fragmentation_python_rust.py`
-compares these two implementations on stratified MassBank samples and writes
-JSONL/CSV summaries for future regression checks.
+compares the public Rust path with the private Python-orchestration parity path
+on stratified MassBank samples and writes JSONL/CSV summaries for future
+regression checks.
 
 This path first applies SIRIUS-style parent-peak handling: MS2 peaks inside
 twice the configured MS2 tolerance around the precursor m/z are treated as the
@@ -171,6 +218,9 @@ low-mass fragments inside SIRIUS's absolute window are not lost to
 formula-finder grid boundaries. The `-1.5` RDBE lower bound is evidence-backed
 from SIRIUS v6 decompositions that include formulas such as `C8H21O6`, while
 still excluding more extreme invalid decompositions that SIRIUS does not emit.
+When the local objective and validation evidence indicate a better tree than
+the SIRIUS reference, prefer fixing the scorer or documenting the divergence
+over forcing the optimizer to copy SIRIUS's selected topology.
 
 SIRIUS `DBPairedScorer` depends on the packaged `bioformulas.bin.gz` resource;
 `find_mfs` does not vendor that resource, so the default DB-paired term is
@@ -200,8 +250,10 @@ When a caller has its own DB formula map, it can be supplied without depending
 on SIRIUS runtime resources:
 
 ```python
-tree = FragmentationTreeFinder("CHNO").find_tree_from_spectrum(
-    spectrum,
+tree = FragmentationTreeFinder("CHNO").find_tree(
+    peaks,
+    precursor_mz=613.2392,
+    precursor_formula="C31H36N2O11",
     scoring_config=SiriusLikeScoringConfig.sirius_v6_reference(
         db_paired_formulas=frozenset({"C31H36N2O11", "C22H21NO6"}),
     ),
@@ -215,8 +267,10 @@ API edge:
 from find_mfs import load_db_paired_formulas
 
 db_formulas = load_db_paired_formulas("db_formulas.txt")
-tree = FragmentationTreeFinder("CHNO").find_tree_from_spectrum(
-    spectrum,
+tree = FragmentationTreeFinder("CHNO").find_tree(
+    peaks,
+    precursor_mz=613.2392,
+    precursor_formula="C31H36N2O11",
     scoring_config=SiriusLikeScoringConfig.sirius_v6_reference(
         db_paired_formulas=db_formulas,
     ),
@@ -331,8 +385,13 @@ Relevant upstream pages:
 - <https://v6.docs.sirius-ms.io/quick-start/#example-2-ms-files>
 - <https://github.com/sirius-ms/sirius>
 - <https://github.com/rust-or/good_lp>
+- <https://docs.gurobi.com/projects/optimizer/>
 
 `good_lp` is MIT-licensed and models MILP problems while delegating solving to
 feature-selected solver crates. Its HiGHS feature supports integer variables
 and statically links HiGHS on Linux, with a C/C++ compiler still required at
 build time.
+
+Gurobi is an optional external solver. Do not vendor license files or Gurobi
+runtime packages into this repository; keep `GRB_LICENSE_FILE` and
+`GUROBI_HOME` as deployment-local configuration.
