@@ -191,3 +191,6 @@ tmp/
 *.pyd
 # Cython debug/annotation files
 *.html
+
+
+gurobi.lic

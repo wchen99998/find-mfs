@@ -178,6 +178,32 @@ spectrum = FragmentationSpectrum(
 tree = FragmentationTreeFinder("CHNO").find_tree_from_spectrum(spectrum)
 ```
 
+This raw-spectrum API defaults to the end-to-end Rust path for preprocessing,
+candidate generation, scoring, graph construction, and the HiGHS solve. Pass
+`implementation="python"` only when comparing against the older orchestration
+path.
+
+The tree ILP solver is selected through `FragmentationTreeOptions`. HiGHS is
+the default portable backend; local builds compiled with the Rust `gurobi`
+feature can use a licensed Gurobi installation instead:
+
+```python
+from find_mfs import FragmentationTreeOptions
+
+tree = FragmentationTreeFinder("CHNO").find_tree_from_spectrum(
+    spectrum,
+    options=FragmentationTreeOptions(solver="gurobi", threads=4),
+)
+```
+
+Use `find_tree_result_from_spectrum(spectrum)` when you want the lower-overhead
+Rust-owned result object instead of the Python `FragmentationTree` dataclass.
+
+The default SIRIUS-like lookup tables are embedded in Rust. To tune those
+tables, create `SiriusLikeScoringTables.default()`, edit it, and pass it to
+`FragmentationTreeFinder(..., scoring_tables=tables)`; the table payload is
+copied into Rust once per finder and reused for later calls.
+
 For closest SIRIUS v6 reproduction, use
 `SiriusLikeScoringConfig.sirius_v6_reference(...)` and pass a caller-owned
 DB-paired formula map when you have one.
