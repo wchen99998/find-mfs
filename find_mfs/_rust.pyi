@@ -161,6 +161,13 @@ class RustFormulaFinder:
 
     def element_symbols(self) -> list[str]: ...
 
+    def with_sirius_like_tables(
+        self,
+        tables: dict[str, Any],
+    ) -> "RustFormulaFinder": ...
+
+    def has_custom_sirius_like_tables(self) -> bool: ...
+
     def simulate_isotope_envelope(
         self,
         core_counts: list[int],
@@ -208,6 +215,34 @@ class RustFormulaFinder:
         RustQueryResult,
         tuple[float, list[str], list[int]],
     ]: ...
+    def find_fragmentation_tree_from_spectrum_python(
+        self,
+        precursor_mz: float,
+        precursor_formula: str,
+        precursor_ion: str,
+        peaks: list[tuple[float, float]],
+        config: Any,
+        reduce_graph: bool,
+        minimal_score: Optional[float] = None,
+        time_limit_seconds: Optional[float] = None,
+        threads: Optional[int] = None,
+        electron_mass: float = 0.000548579909065,
+        solver: str = "highs",
+    ) -> "RawSpectrumTreeTuple": ...
+    def find_fragmentation_tree_from_spectrum_result_python(
+        self,
+        precursor_mz: float,
+        precursor_formula: str,
+        precursor_ion: str,
+        peaks: list[tuple[float, float]],
+        config: Any,
+        reduce_graph: bool,
+        minimal_score: Optional[float] = None,
+        time_limit_seconds: Optional[float] = None,
+        threads: Optional[int] = None,
+        electron_mass: float = 0.000548579909065,
+        solver: str = "highs",
+    ) -> "RustFragmentationTreeResult": ...
 
 def format_formula(symbols: list[str], counts: list[int], charge: int) -> str: ...
 
@@ -217,6 +252,47 @@ def parse_element_symbols(formula_str: str) -> list[str]: ...
 
 FragmentCandidateTuple = tuple[str, list[int], str, int, int, float, float]
 SelectedLossTuple = tuple[str, str, float]
+SelectedRawFragmentTuple = tuple[
+    str,
+    list[int],
+    str,
+    Optional[int],
+    int,
+    float,
+    float,
+    Optional[float],
+]
+SelectedRawLossTuple = tuple[str, str, float]
+RawSpectrumTreeTuple = tuple[
+    float,
+    bool,
+    str,
+    str,
+    list[SelectedRawFragmentTuple],
+    list[SelectedRawLossTuple],
+    int,
+    int,
+    int,
+    int,
+    float,
+]
+
+class RustFragmentationTreeResult:
+    tree_score: float
+    is_optimal: bool
+    solver_status: str
+    root_formula: str
+    graph_vertex_count: int
+    graph_edge_count: int
+    reduced_vertex_count: int
+    reduced_edge_count: int
+    tree_size_score: float
+    def fragments(self) -> list[SelectedRawFragmentTuple]: ...
+    def losses(self) -> list[SelectedRawLossTuple]: ...
+    def formula_strings(self) -> list[str]: ...
+    def loss_tuples(self) -> list[tuple[str, str]]: ...
+    def graph_counts(self) -> tuple[int, int, int, int]: ...
+    def to_tuple(self) -> RawSpectrumTreeTuple: ...
 
 def solve_fragmentation_tree_python(
     root_candidates: list[FragmentCandidateTuple],
@@ -231,6 +307,7 @@ def solve_fragmentation_tree_python(
     minimal_score: Optional[float] = None,
     time_limit_seconds: Optional[float] = None,
     threads: Optional[int] = None,
+    solver: str = "highs",
 ) -> tuple[
     float,
     bool,

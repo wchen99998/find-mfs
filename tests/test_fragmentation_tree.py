@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -13,7 +14,9 @@ from find_mfs.fragmentation import (
     FragmentationSpectrum,
     FragmentationTree,
     FragmentationTreeFinder,
+    FragmentationTreeOptions,
     SiriusLikeScoringConfig,
+    SiriusLikeScoringTables,
     SpectrumPeak,
     load_db_paired_formulas,
 )
@@ -23,12 +26,36 @@ from find_mfs.fragmentation.scoring import SiriusLikeScorer
 rust = pytest.importorskip("find_mfs._rust")
 
 
+def _small_explicit_tree_inputs():
+    finder = FragmentationTreeFinder("CH")
+    root = [
+        FragmentCandidate(
+            formula="C4H8",
+            mass=56.0,
+            score=1.0,
+            peak_id=0,
+            color=0,
+        )
+    ]
+    fragments = [
+        FragmentCandidate("C3H6", 42.0, score=3.0, peak_id=1, color=1),
+        FragmentCandidate("C2H4", 28.0, score=5.0, peak_id=2, color=2),
+        FragmentCandidate("CH2", 14.0, score=-30.0, peak_id=3, color=3),
+    ]
+    scoring = ExplicitFragmentationScoring(
+        peak_scores={1: 4.0, 2: 7.0},
+        peak_pair_scores={(0, 1): 1.0, (1, 2): 2.0},
+    )
+    return finder, root, fragments, scoring
+
+
 def test_public_fragmentation_api_is_exported_from_package():
     from find_mfs import (
         ExplicitFragmentationScoring as TopLevelScoring,
         FragmentCandidate as TopLevelFragmentCandidate,
         FragmentationTreeFinder as TopLevelFragmentationTreeFinder,
         SiriusLikeScoringConfig as TopLevelSiriusLikeScoringConfig,
+        SiriusLikeScoringTables as TopLevelSiriusLikeScoringTables,
         load_db_paired_formulas as top_level_load_db_paired_formulas,
     )
 
@@ -36,6 +63,7 @@ def test_public_fragmentation_api_is_exported_from_package():
     assert TopLevelFragmentationTreeFinder is FragmentationTreeFinder
     assert TopLevelScoring is ExplicitFragmentationScoring
     assert TopLevelSiriusLikeScoringConfig is SiriusLikeScoringConfig
+    assert TopLevelSiriusLikeScoringTables is SiriusLikeScoringTables
     assert top_level_load_db_paired_formulas is load_db_paired_formulas
 
 
@@ -464,29 +492,12 @@ def test_rust_fragmentation_tree_python_bridge_solves_colorful_tree():
 
 
 def test_public_fragmentation_tree_api_solves_colorful_tree():
-    finder = FragmentationTreeFinder("CH")
-    root = [
-        FragmentCandidate(
-            formula="C4H8",
-            mass=56.0,
-            score=1.0,
-            peak_id=0,
-            color=0,
-        )
-    ]
-    fragments = [
-        FragmentCandidate("C3H6", 42.0, score=3.0, peak_id=1, color=1),
-        FragmentCandidate("C2H4", 28.0, score=5.0, peak_id=2, color=2),
-        FragmentCandidate("CH2", 14.0, score=-30.0, peak_id=3, color=3),
-    ]
+    finder, root, fragments, scoring = _small_explicit_tree_inputs()
 
     tree = finder.find_tree(
         root,
         fragments,
-        scoring=ExplicitFragmentationScoring(
-            peak_scores={1: 4.0, 2: 7.0},
-            peak_pair_scores={(0, 1): 1.0, (1, 2): 2.0},
-        ),
+        scoring=scoring,
     )
 
     assert tree.tree_score == 23.0
@@ -507,8 +518,46 @@ def test_public_fragmentation_tree_api_solves_colorful_tree():
     ]
     assert (tree.graph_vertex_count, tree.graph_edge_count) == (5, 7)
     assert (tree.reduced_vertex_count, tree.reduced_edge_count) == (4, 4)
+    assert tree.query_params["solver"] == "highs"
     assert "C4H8" in tree.to_table()
     assert "CH2" in tree.losses_table()
+
+
+def test_fragmentation_tree_solver_option_rejects_unknown_name():
+    finder, root, fragments, scoring = _small_explicit_tree_inputs()
+
+    with pytest.raises(ValueError, match="unknown fragmentation tree solver"):
+        finder.find_tree(
+            root,
+            fragments,
+            scoring=scoring,
+            options=FragmentationTreeOptions(solver="bad"),
+        )
+
+
+@pytest.mark.skipif(
+    os.environ.get("FIND_MFS_TEST_GUROBI") != "1",
+    reason="requires Gurobi feature build and a local Gurobi license",
+)
+def test_fragmentation_tree_gurobi_solver_matches_highs_on_explicit_tree():
+    finder, root, fragments, scoring = _small_explicit_tree_inputs()
+
+    highs = finder.find_tree(
+        root,
+        fragments,
+        scoring=scoring,
+        options=FragmentationTreeOptions(solver="highs", threads=1),
+    )
+    gurobi = finder.find_tree(
+        root,
+        fragments,
+        scoring=scoring,
+        options=FragmentationTreeOptions(solver="gurobi", threads=1),
+    )
+
+    assert gurobi.query_params["solver"] == "gurobi"
+    assert gurobi.tree_score == highs.tree_score
+    assert _tree_signature(gurobi) == _tree_signature(highs)
 
 
 NOVOBIOCIN_SYMBOLS = ["C", "H", "N", "O"]
@@ -836,6 +885,7 @@ def test_raw_massbank_novobiocin_matches_sirius_v6_tree():
 
     assert tree.root.formula == "C31H36N2O11"
     assert tree.is_optimal
+    assert tree.query_params["implementation"] == "rust"
     assert selected == reference
     assert selected_losses == reference_losses
 
@@ -865,6 +915,111 @@ def test_raw_massbank_novobiocin_strict_parity_matches_with_external_db_map():
 
     assert selected == NOVOBIOCIN_SIRIUS_V6_RAW_REFERENCE["formulas"]
     assert selected_losses == NOVOBIOCIN_SIRIUS_V6_RAW_REFERENCE["losses"]
+
+
+def _tree_signature(tree):
+    return (
+        tree.root.formula,
+        sorted(fragment.formula for fragment in tree.fragments),
+        sorted(
+            (loss.source.formula, loss.target.formula, loss.formula)
+            for loss in tree.losses
+        ),
+        tree.query_params.get("tree_size_score"),
+    )
+
+
+@pytest.mark.parametrize(
+    "accession",
+    [
+        "MSBNK-Athens_Univ-AU116706",
+        "MSBNK-ACES_SU-AS000913",
+        "MSBNK-Athens_Univ-AU110802",
+    ],
+)
+def test_raw_spectrum_rust_end_to_end_matches_python_pipeline(accession):
+    records = {
+        record["accession"]: record
+        for record in json.loads(MASSBANK_FIXTURE.read_text())
+    }
+    spectrum = FragmentationSpectrum.from_massbank_record(records[accession])
+    finder = FragmentationTreeFinder("CHNO")
+
+    python_tree = finder.find_tree_from_spectrum(spectrum, implementation="python")
+    rust_tree = finder.find_tree_from_spectrum(spectrum, implementation="rust")
+
+    assert _tree_signature(rust_tree) == _tree_signature(python_tree)
+    assert rust_tree.is_optimal
+    assert rust_tree.graph_vertex_count == python_tree.graph_vertex_count
+    assert rust_tree.graph_edge_count == python_tree.graph_edge_count
+
+
+def test_raw_spectrum_rust_result_object_matches_python_pipeline():
+    records = {
+        record["accession"]: record
+        for record in json.loads(MASSBANK_FIXTURE.read_text())
+    }
+    spectrum = FragmentationSpectrum.from_massbank_record(
+        records["MSBNK-Athens_Univ-AU116706"]
+    )
+    finder = FragmentationTreeFinder("CHNO")
+
+    python_tree = finder.find_tree_from_spectrum(spectrum, implementation="python")
+    rust_result = finder.find_tree_result_from_spectrum(spectrum)
+
+    assert rust_result.root_formula == python_tree.root.formula
+    assert rust_result.tree_score == python_tree.tree_score
+    assert rust_result.graph_counts() == (
+        python_tree.graph_vertex_count,
+        python_tree.graph_edge_count,
+        python_tree.reduced_vertex_count,
+        python_tree.reduced_edge_count,
+    )
+    assert sorted(rust_result.formula_strings()) == sorted(
+        fragment.formula for fragment in python_tree.fragments
+    )
+    assert sorted(
+        (source, target)
+        for source, target, _score in rust_result.losses()
+    ) == sorted(
+        (loss.source.formula, loss.target.formula)
+        for loss in python_tree.losses
+    )
+
+
+def test_raw_spectrum_custom_tables_are_loaded_once_into_rust():
+    records = {
+        record["accession"]: record
+        for record in json.loads(MASSBANK_FIXTURE.read_text())
+    }
+    spectrum = FragmentationSpectrum.from_massbank_record(
+        records["MSBNK-Athens_Univ-AU116706"]
+    )
+    baseline = FragmentationTreeFinder("CHNO").find_tree_result_from_spectrum(
+        spectrum
+    )
+
+    tables = SiriusLikeScoringTables.default()
+    default_finder = FragmentationTreeFinder("CHNO", scoring_tables=tables)
+    default_custom = default_finder.find_tree_result_from_spectrum(spectrum)
+    assert default_custom.tree_score == baseline.tree_score
+
+    tables.common_fragments["C12H12O2"] = (
+        tables.common_fragments.get("C12H12O2", 0.0) + 5.0
+    )
+    repeated_default = default_finder.find_tree_result_from_spectrum(spectrum)
+    assert repeated_default.tree_score == default_custom.tree_score
+
+    finder = FragmentationTreeFinder("CHNO", scoring_tables=tables)
+    custom = finder.find_tree_result_from_spectrum(spectrum)
+    assert custom.tree_score > baseline.tree_score + 1.0
+
+    tables.common_fragments["C12H12O2"] += 1000.0
+    repeated = finder.find_tree_result_from_spectrum(spectrum)
+    assert repeated.tree_score == custom.tree_score
+
+    with pytest.raises(ValueError, match="custom scoring_tables"):
+        finder.find_tree_from_spectrum(spectrum, implementation="python")
 
 
 @pytest.mark.parametrize(

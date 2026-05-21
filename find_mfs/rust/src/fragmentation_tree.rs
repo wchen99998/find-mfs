@@ -476,6 +476,7 @@ pub struct TreeSolveOptions {
     pub minimal_score: Option<f64>,
     pub time_limit_seconds: Option<f64>,
     pub threads: Option<u32>,
+    pub solver: TreeSolver,
 }
 
 impl Default for TreeSolveOptions {
@@ -484,6 +485,32 @@ impl Default for TreeSolveOptions {
             minimal_score: None,
             time_limit_seconds: None,
             threads: None,
+            solver: TreeSolver::Highs,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TreeSolver {
+    Highs,
+    Gurobi,
+}
+
+impl TreeSolver {
+    pub fn from_name(name: &str) -> Result<Self, String> {
+        match name {
+            "highs" => Ok(Self::Highs),
+            "gurobi" => Ok(Self::Gurobi),
+            _ => Err(format!(
+                "unknown fragmentation tree solver {name:?}; expected 'highs' or 'gurobi'"
+            )),
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Highs => "highs",
+            Self::Gurobi => "gurobi",
         }
     }
 }
@@ -532,6 +559,16 @@ pub fn solve_optimal_colorful_tree(
 ) -> Result<FragmentationTree, TreeSolveError> {
     graph.validate()?;
 
+    match options.solver {
+        TreeSolver::Highs => solve_optimal_colorful_tree_highs(graph, options),
+        TreeSolver::Gurobi => solve_optimal_colorful_tree_gurobi(graph, options),
+    }
+}
+
+fn solve_optimal_colorful_tree_highs(
+    graph: &FragmentationGraph,
+    options: TreeSolveOptions,
+) -> Result<FragmentationTree, TreeSolveError> {
     let incoming = graph.incoming_edges();
     let outgoing = graph.outgoing_edges();
     let root_edges = &outgoing[PSEUDO_ROOT_ID];
@@ -619,7 +656,7 @@ pub fn solve_optimal_colorful_tree(
         })
         .collect();
 
-    build_tree_from_selected_edges(
+    build_tree_from_selected_edges_from_good_lp_status(
         graph,
         &selected_edges,
         objective.eval_with(&solution),
@@ -627,11 +664,233 @@ pub fn solve_optimal_colorful_tree(
     )
 }
 
-fn build_tree_from_selected_edges(
+#[cfg(feature = "gurobi")]
+fn solve_optimal_colorful_tree_gurobi(
+    graph: &FragmentationGraph,
+    options: TreeSolveOptions,
+) -> Result<FragmentationTree, TreeSolveError> {
+    use grb::expr::LinExpr;
+    use grb::prelude::*;
+
+    let incoming = graph.incoming_edges();
+    let outgoing = graph.outgoing_edges();
+    let root_edges = &outgoing[PSEUDO_ROOT_ID];
+    if root_edges.is_empty() {
+        return Err(TreeSolveError::InvalidGraph(
+            "fragmentation graph has no pseudo-root outgoing edge".to_string(),
+        ));
+    }
+
+    let mut model = create_gurobi_model("fragmentation_tree")?;
+    model
+        .set_param(param::OutputFlag, 0)
+        .map_err(gurobi_error)?;
+    model
+        .set_param(param::LogToConsole, 0)
+        .map_err(gurobi_error)?;
+    if let Some(seconds) = options.time_limit_seconds {
+        if seconds.is_finite() && seconds >= 0.0 {
+            model
+                .set_param(param::TimeLimit, seconds)
+                .map_err(gurobi_error)?;
+        }
+    }
+    if let Some(threads) = options.threads {
+        if threads > 0 {
+            model
+                .set_param(param::Threads, threads as i32)
+                .map_err(gurobi_error)?;
+        }
+    }
+
+    let mut edge_vars = Vec::with_capacity(graph.edges.len());
+    for edge_id in 0..graph.edges.len() {
+        let name = format!("e{edge_id}");
+        edge_vars.push(add_binvar!(model, name: &name).map_err(gurobi_error)?);
+    }
+    model.update().map_err(gurobi_error)?;
+
+    let mut objective = LinExpr::new();
+    for (edge, edge_var) in graph.edges.iter().zip(edge_vars.iter()) {
+        objective.add_term(edge.weight, *edge_var);
+    }
+    model
+        .set_objective(objective.clone(), Maximize)
+        .map_err(gurobi_error)?;
+
+    for (color, edge_ids) in color_incoming_edges(graph) {
+        let mut color_expr = LinExpr::new();
+        for edge_id in edge_ids {
+            color_expr.add_term(1.0, edge_vars[edge_id]);
+        }
+        model
+            .add_constr(
+                &format!("color_{color}"),
+                grb_constraint(color_expr, ConstrSense::Less, 1.0),
+            )
+            .map_err(gurobi_error)?;
+    }
+
+    for fragment_id in 1..graph.fragments.len() {
+        if incoming[fragment_id].is_empty() || outgoing[fragment_id].is_empty() {
+            continue;
+        }
+        for outgoing_edge_id in &outgoing[fragment_id] {
+            let mut connected_expr = LinExpr::new();
+            connected_expr.add_term(1.0, edge_vars[*outgoing_edge_id]);
+            for incoming_edge_id in &incoming[fragment_id] {
+                connected_expr.add_term(-1.0, edge_vars[*incoming_edge_id]);
+            }
+            model
+                .add_constr(
+                    &format!("connected_{outgoing_edge_id}"),
+                    grb_constraint(connected_expr, ConstrSense::Less, 0.0),
+                )
+                .map_err(gurobi_error)?;
+        }
+    }
+
+    let mut root_expr = LinExpr::new();
+    for edge_id in root_edges {
+        root_expr.add_term(1.0, edge_vars[*edge_id]);
+    }
+    model
+        .add_constr(
+            "one_root",
+            grb_constraint(root_expr, ConstrSense::Equal, 1.0),
+        )
+        .map_err(gurobi_error)?;
+
+    if let Some(minimal_score) = options.minimal_score {
+        if minimal_score.is_finite() {
+            model
+                .add_constr(
+                    "minimal_score",
+                    grb_constraint(objective.clone(), ConstrSense::Greater, minimal_score),
+                )
+                .map_err(gurobi_error)?;
+        }
+    }
+
+    model.optimize().map_err(gurobi_error)?;
+    let status = model.status().map_err(gurobi_error)?;
+    let solution_count: i32 = model.get_attr(attr::SolCount).map_err(gurobi_error)?;
+    let tree_status = match status {
+        Status::Optimal => TreeSolutionStatus::Optimal,
+        Status::TimeLimit if solution_count > 0 => TreeSolutionStatus::TimeLimit,
+        Status::Infeasible | Status::InfOrUnbd => return Err(TreeSolveError::Infeasible),
+        Status::SubOptimal | Status::UserObjLimit if solution_count > 0 => {
+            TreeSolutionStatus::GapLimit
+        }
+        _ if solution_count > 0 => TreeSolutionStatus::GapLimit,
+        _ => {
+            return Err(TreeSolveError::NoSolution(format!(
+                "Gurobi returned status {status:?} with no incumbent solution"
+            )))
+        }
+    };
+
+    let values: Vec<f64> = model
+        .get_obj_attr_batch(attr::X, edge_vars.iter().copied())
+        .map_err(gurobi_error)?;
+    let selected_edges: Vec<usize> = values
+        .iter()
+        .enumerate()
+        .filter_map(
+            |(edge_id, value)| {
+                if *value > 0.5 {
+                    Some(edge_id)
+                } else {
+                    None
+                }
+            },
+        )
+        .collect();
+    let solver_objective: f64 = model.get_attr(attr::ObjVal).map_err(gurobi_error)?;
+
+    build_tree_from_selected_edges_with_status(
+        graph,
+        &selected_edges,
+        solver_objective,
+        tree_status,
+    )
+}
+
+#[cfg(feature = "gurobi")]
+fn create_gurobi_model(name: &str) -> Result<grb::Model, TreeSolveError> {
+    use grb::prelude::*;
+
+    std::thread_local! {
+        static GUROBI_ENV: Result<Env, String> = {
+            let mut env = Env::empty().map_err(|err| err.to_string())?;
+            env.set(param::OutputFlag, 0).map_err(|err| err.to_string())?;
+            env.set(param::LogToConsole, 0).map_err(|err| err.to_string())?;
+            env.set(param::LogFile, "".to_string()).map_err(|err| err.to_string())?;
+            env.start().map_err(|err| err.to_string())
+        };
+    }
+
+    GUROBI_ENV.with(|env| match env {
+        Ok(env) => Model::with_env(name, env).map_err(gurobi_error),
+        Err(err) => Err(TreeSolveError::NoSolution(format!(
+            "Gurobi environment error: {err}"
+        ))),
+    })
+}
+
+#[cfg(feature = "gurobi")]
+fn grb_constraint(
+    lhs: grb::expr::LinExpr,
+    sense: grb::ConstrSense,
+    rhs: f64,
+) -> grb::constr::IneqExpr {
+    grb::constr::IneqExpr {
+        lhs: lhs.into(),
+        sense,
+        rhs: grb::Expr::Constant(rhs),
+    }
+}
+
+#[cfg(feature = "gurobi")]
+fn gurobi_error(err: grb::Error) -> TreeSolveError {
+    let text = err.to_string();
+    if text.contains("infeasible") || text.contains("Infeasible") {
+        TreeSolveError::Infeasible
+    } else {
+        TreeSolveError::NoSolution(format!("Gurobi error: {text}"))
+    }
+}
+
+#[cfg(not(feature = "gurobi"))]
+fn solve_optimal_colorful_tree_gurobi(
+    _graph: &FragmentationGraph,
+    _options: TreeSolveOptions,
+) -> Result<FragmentationTree, TreeSolveError> {
+    Err(TreeSolveError::NoSolution(
+        "Gurobi solver requested, but find-mfs-rust was built without the 'gurobi' feature"
+            .to_string(),
+    ))
+}
+
+fn build_tree_from_selected_edges_from_good_lp_status(
     graph: &FragmentationGraph,
     selected_edges: &[usize],
     solver_objective: f64,
     status: SolutionStatus,
+) -> Result<FragmentationTree, TreeSolveError> {
+    let status = match status {
+        SolutionStatus::Optimal => TreeSolutionStatus::Optimal,
+        SolutionStatus::TimeLimit => TreeSolutionStatus::TimeLimit,
+        SolutionStatus::GapLimit => TreeSolutionStatus::GapLimit,
+    };
+    build_tree_from_selected_edges_with_status(graph, selected_edges, solver_objective, status)
+}
+
+fn build_tree_from_selected_edges_with_status(
+    graph: &FragmentationGraph,
+    selected_edges: &[usize],
+    solver_objective: f64,
+    status: TreeSolutionStatus,
 ) -> Result<FragmentationTree, TreeSolveError> {
     let root_edges: Vec<usize> = selected_edges
         .iter()
@@ -684,12 +943,6 @@ fn build_tree_from_selected_edges(
             "reconstructed tree weight {tree_weight} differs from solver objective {solver_objective}"
         )));
     }
-
-    let status = match status {
-        SolutionStatus::Optimal => TreeSolutionStatus::Optimal,
-        SolutionStatus::TimeLimit => TreeSolutionStatus::TimeLimit,
-        SolutionStatus::GapLimit => TreeSolutionStatus::GapLimit,
-    };
 
     Ok(FragmentationTree {
         root_fragment,

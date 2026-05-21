@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Iterable, TYPE_CHECKING
+from typing import Iterable, Literal, TYPE_CHECKING
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -58,6 +58,7 @@ class FragmentationTreeOptions:
     minimal_score: float | None = None
     time_limit_seconds: float | None = None
     threads: int | None = None
+    solver: Literal["highs", "gurobi"] = "highs"
 
 
 @dataclass(frozen=True, slots=True)

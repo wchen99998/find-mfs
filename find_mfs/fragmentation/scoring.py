@@ -4,7 +4,7 @@ import gzip
 import math
 from os import PathLike
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Sequence
 
@@ -61,6 +61,63 @@ SIRIUS_V6_RECOMBINED_COMMON_LOSS_OVERRIDES = {
     "CH3NO": -0.6805871305483651,
     "C2H5N": -0.6913205656908721,
 }
+
+
+@dataclass(slots=True)
+class SiriusLikeScoringTables:
+    """
+    Caller-owned SIRIUS-like lookup tables for the Rust raw-spectrum engine.
+
+    Pass an instance to ``FragmentationTreeFinder(..., scoring_tables=tables)``
+    to copy these tables into Rust once and reuse them for every spectrum call.
+    """
+
+    common_fragments: dict[str, float] = field(default_factory=dict)
+    common_losses: dict[str, float] = field(default_factory=dict)
+    recombined_common_losses: dict[str, float] = field(default_factory=dict)
+    recombined_common_loss_overrides: dict[str, float] = field(default_factory=dict)
+    common_radicals: dict[str, float] = field(default_factory=dict)
+    common_root_losses: dict[str, float] = field(default_factory=dict)
+    strange_fragment_whitelist: set[str] = field(default_factory=set)
+    strange_losses: set[str] = field(default_factory=set)
+    common_fragment_normalization: float = COMMON_FRAGMENT_NORMALIZATION
+    common_loss_normalization: float = COMMON_LOSS_NORMALIZATION
+    common_root_loss_normalization: float = COMMON_ROOT_LOSS_NORMALIZATION
+
+    @classmethod
+    def default(cls) -> "SiriusLikeScoringTables":
+        return cls(
+            common_fragments=dict(_augmented_common_fragments()),
+            common_losses=dict(_augmented_common_losses()),
+            recombined_common_losses=dict(_recombined_common_losses()),
+            recombined_common_loss_overrides=dict(
+                SIRIUS_V6_RECOMBINED_COMMON_LOSS_OVERRIDES
+            ),
+            common_radicals=dict(COMMON_RADICALS),
+            common_root_losses=dict(COMMON_ROOT_LOSSES),
+            strange_fragment_whitelist=set(STRANGE_FRAGMENT_WHITELIST),
+            strange_losses=set(STRANGE_LOSSES),
+            common_fragment_normalization=COMMON_FRAGMENT_NORMALIZATION,
+            common_loss_normalization=COMMON_LOSS_NORMALIZATION,
+            common_root_loss_normalization=COMMON_ROOT_LOSS_NORMALIZATION,
+        )
+
+    def to_rust_payload(self) -> dict[str, object]:
+        return {
+            "common_fragments": sorted(self.common_fragments.items()),
+            "common_losses": sorted(self.common_losses.items()),
+            "recombined_common_losses": sorted(self.recombined_common_losses.items()),
+            "recombined_common_loss_overrides": sorted(
+                self.recombined_common_loss_overrides.items()
+            ),
+            "common_radicals": sorted(self.common_radicals.items()),
+            "common_root_losses": sorted(self.common_root_losses.items()),
+            "strange_fragment_whitelist": sorted(self.strange_fragment_whitelist),
+            "strange_losses": sorted(self.strange_losses),
+            "common_fragment_normalization": self.common_fragment_normalization,
+            "common_loss_normalization": self.common_loss_normalization,
+            "common_root_loss_normalization": self.common_root_loss_normalization,
+        }
 
 
 @dataclass(frozen=True, slots=True)

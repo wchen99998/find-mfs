@@ -77,6 +77,16 @@ class RustFormulaFinder:
         obj._n_elem = len(obj._symbols)
         return obj
 
+    def with_sirius_like_tables(self, scoring_tables) -> "RustFormulaFinder":
+        obj = self.__class__.__new__(self.__class__)
+        obj._decomposer = self._decomposer
+        obj._symbols = list(self._symbols)
+        obj._n_elem = self._n_elem
+        obj._inner = self._inner.with_sirius_like_tables(
+            scoring_tables.to_rust_payload()
+        )
+        return obj
+
     @staticmethod
     def _isospec_lib_path() -> str:
         from IsoSpecPy.isoFFI import isoFFI
@@ -184,3 +194,59 @@ class RustFormulaFinder:
         adduct_mass = float(adduct_mass)
         adduct_elements = (list(adduct_symbols), list(adduct_counts))
         return raw, list(self._symbols), adduct_mass, adduct_elements
+
+    def find_fragmentation_tree_from_spectrum_raw(
+        self,
+        *,
+        precursor_mz: float,
+        precursor_formula: str,
+        precursor_ion: str,
+        peaks: list[tuple[float, float]],
+        scoring_config,
+        reduce_graph: bool,
+        minimal_score: float | None,
+        time_limit_seconds: float | None,
+        threads: int | None,
+        solver: str,
+    ):
+        return self._inner.find_fragmentation_tree_from_spectrum_python(
+            float(precursor_mz),
+            str(precursor_formula),
+            str(precursor_ion),
+            [(float(mz), float(intensity)) for mz, intensity in peaks],
+            scoring_config,
+            bool(reduce_graph),
+            None if minimal_score is None else float(minimal_score),
+            None if time_limit_seconds is None else float(time_limit_seconds),
+            None if threads is None else int(threads),
+            float(ELECTRON.mass),
+            str(solver),
+        )
+
+    def find_fragmentation_tree_result_from_spectrum_raw(
+        self,
+        *,
+        precursor_mz: float,
+        precursor_formula: str,
+        precursor_ion: str,
+        peaks: list[tuple[float, float]],
+        scoring_config,
+        reduce_graph: bool,
+        minimal_score: float | None,
+        time_limit_seconds: float | None,
+        threads: int | None,
+        solver: str,
+    ):
+        return self._inner.find_fragmentation_tree_from_spectrum_result_python(
+            float(precursor_mz),
+            str(precursor_formula),
+            str(precursor_ion),
+            [(float(mz), float(intensity)) for mz, intensity in peaks],
+            scoring_config,
+            bool(reduce_graph),
+            None if minimal_score is None else float(minimal_score),
+            None if time_limit_seconds is None else float(time_limit_seconds),
+            None if threads is None else int(threads),
+            float(ELECTRON.mass),
+            str(solver),
+        )

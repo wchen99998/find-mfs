@@ -4,14 +4,18 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict};
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::chemistry;
 use crate::finder::StoredFormulaFinder;
 use crate::formula;
+use crate::fragmentation_spectrum::{
+    compute_sirius_like_tree_from_spectrum, SiriusLikeConfig, SiriusLikeTables, SpectrumPeak,
+    SpectrumTreeResult,
+};
 use crate::fragmentation_tree::{
     compute_fragmentation_tree, FragmentCandidate, GraphScoring, SubFormulaGraphInput,
-    TreeSolveOptions,
+    TreeSolveOptions, TreeSolver,
 };
 use crate::prior::PriorScorer;
 use crate::query::FindFormulaeOutput;
@@ -39,6 +43,17 @@ type DisplayRowTuple = (
 type PublicResultTuple = (PyRustQueryResult, (f64, Vec<String>, Vec<i32>));
 type PyFragmentCandidateTuple = (String, Vec<i32>, String, usize, i32, f64, f64);
 type PySelectedLossTuple = (String, String, f64);
+type PySelectedRawFragmentTuple = (
+    String,
+    Vec<i32>,
+    String,
+    Option<usize>,
+    i32,
+    f64,
+    f64,
+    Option<f64>,
+);
+type PySelectedRawLossTuple = (String, String, f64);
 type PyFragmentationTreeTuple = (
     f64,
     bool,
@@ -50,6 +65,19 @@ type PyFragmentationTreeTuple = (
     usize,
     usize,
     usize,
+);
+type PyRawSpectrumTreeTuple = (
+    f64,
+    bool,
+    String,
+    String,
+    Vec<PySelectedRawFragmentTuple>,
+    Vec<PySelectedRawLossTuple>,
+    usize,
+    usize,
+    usize,
+    usize,
+    f64,
 );
 
 struct PyIsotopeMatchInput {
@@ -249,6 +277,163 @@ impl PyRustQueryResult {
             self.output.counts.row(idx),
             &self.output.rdbe_coeffs,
         ))
+    }
+}
+
+#[pyclass(name = "RustFragmentationTreeResult")]
+#[derive(Clone)]
+struct PyRustFragmentationTreeResult {
+    result: SpectrumTreeResult,
+}
+
+impl PyRustFragmentationTreeResult {
+    fn new(result: SpectrumTreeResult) -> Self {
+        Self { result }
+    }
+
+    fn fragment_rows(&self) -> Vec<PySelectedRawFragmentTuple> {
+        self.result
+            .fragments
+            .iter()
+            .map(|fragment| {
+                (
+                    fragment.formula.clone(),
+                    fragment.counts.clone(),
+                    fragment.ionization.clone(),
+                    fragment.peak_id,
+                    fragment.color,
+                    fragment.mass,
+                    fragment.score,
+                    fragment.intensity,
+                )
+            })
+            .collect()
+    }
+
+    fn loss_rows(&self) -> Vec<PySelectedRawLossTuple> {
+        self.result
+            .losses
+            .iter()
+            .map(|loss| {
+                (
+                    loss.source_formula.clone(),
+                    loss.target_formula.clone(),
+                    loss.score,
+                )
+            })
+            .collect()
+    }
+
+    fn tuple(&self) -> PyRawSpectrumTreeTuple {
+        (
+            self.result.tree_score,
+            self.result.is_optimal,
+            self.result.solver_status.clone(),
+            self.result.root_formula.clone(),
+            self.fragment_rows(),
+            self.loss_rows(),
+            self.result.graph_vertex_count,
+            self.result.graph_edge_count,
+            self.result.reduced_vertex_count,
+            self.result.reduced_edge_count,
+            self.result.tree_size_score,
+        )
+    }
+}
+
+#[pymethods]
+impl PyRustFragmentationTreeResult {
+    #[getter]
+    fn tree_score(&self) -> f64 {
+        self.result.tree_score
+    }
+
+    #[getter]
+    fn is_optimal(&self) -> bool {
+        self.result.is_optimal
+    }
+
+    #[getter]
+    fn solver_status(&self) -> String {
+        self.result.solver_status.clone()
+    }
+
+    #[getter]
+    fn root_formula(&self) -> String {
+        self.result.root_formula.clone()
+    }
+
+    #[getter]
+    fn graph_vertex_count(&self) -> usize {
+        self.result.graph_vertex_count
+    }
+
+    #[getter]
+    fn graph_edge_count(&self) -> usize {
+        self.result.graph_edge_count
+    }
+
+    #[getter]
+    fn reduced_vertex_count(&self) -> usize {
+        self.result.reduced_vertex_count
+    }
+
+    #[getter]
+    fn reduced_edge_count(&self) -> usize {
+        self.result.reduced_edge_count
+    }
+
+    #[getter]
+    fn tree_size_score(&self) -> f64 {
+        self.result.tree_size_score
+    }
+
+    fn fragments(&self) -> Vec<PySelectedRawFragmentTuple> {
+        self.fragment_rows()
+    }
+
+    fn losses(&self) -> Vec<PySelectedRawLossTuple> {
+        self.loss_rows()
+    }
+
+    fn formula_strings(&self) -> Vec<String> {
+        self.result
+            .fragments
+            .iter()
+            .map(|fragment| fragment.formula.clone())
+            .collect()
+    }
+
+    fn loss_tuples(&self) -> Vec<(String, String)> {
+        self.result
+            .losses
+            .iter()
+            .map(|loss| (loss.source_formula.clone(), loss.target_formula.clone()))
+            .collect()
+    }
+
+    fn graph_counts(&self) -> (usize, usize, usize, usize) {
+        (
+            self.result.graph_vertex_count,
+            self.result.graph_edge_count,
+            self.result.reduced_vertex_count,
+            self.result.reduced_edge_count,
+        )
+    }
+
+    fn to_tuple(&self) -> PyRawSpectrumTreeTuple {
+        self.tuple()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RustFragmentationTreeResult(root={:?}, fragments={}, losses={}, tree_score={:.6}, status={:?})",
+            self.result.root_formula,
+            self.result.fragments.len(),
+            self.result.losses.len(),
+            self.result.tree_score,
+            self.result.solver_status,
+        )
     }
 }
 
@@ -654,6 +839,7 @@ fn extract_isotope_match_input(
 #[pyclass(name = "RustFormulaFinder")]
 struct PyRustFormulaFinder {
     inner: Arc<StoredFormulaFinder>,
+    sirius_like_tables: Option<Arc<SiriusLikeTables>>,
 }
 
 #[pymethods]
@@ -698,6 +884,7 @@ impl PyRustFormulaFinder {
         .map_err(PyValueError::new_err)?;
         Ok(Self {
             inner: Arc::new(inner),
+            sirius_like_tables: None,
         })
     }
 
@@ -734,6 +921,7 @@ impl PyRustFormulaFinder {
         .map_err(PyValueError::new_err)?;
         Ok(Self {
             inner: Arc::new(inner),
+            sirius_like_tables: None,
         })
     }
 
@@ -780,6 +968,7 @@ impl PyRustFormulaFinder {
         .map_err(PyValueError::new_err)?;
         Ok(Self {
             inner: Arc::new(inner),
+            sirius_like_tables: None,
         })
     }
 
@@ -814,6 +1003,7 @@ impl PyRustFormulaFinder {
         .map_err(PyValueError::new_err)?;
         Ok(Self {
             inner: Arc::new(inner),
+            sirius_like_tables: None,
         })
     }
 
@@ -842,6 +1032,7 @@ impl PyRustFormulaFinder {
         .map_err(PyValueError::new_err)?;
         Ok(Self {
             inner: Arc::new(inner),
+            sirius_like_tables: None,
         })
     }
 
@@ -854,7 +1045,19 @@ impl PyRustFormulaFinder {
             .map_err(PyValueError::new_err)?;
         Ok(Self {
             inner: Arc::new(inner),
+            sirius_like_tables: None,
         })
+    }
+
+    fn with_sirius_like_tables(&self, tables: Bound<'_, PyDict>) -> PyResult<Self> {
+        Ok(Self {
+            inner: Arc::clone(&self.inner),
+            sirius_like_tables: Some(Arc::new(extract_sirius_like_tables(&tables)?)),
+        })
+    }
+
+    fn has_custom_sirius_like_tables(&self) -> bool {
+        self.sirius_like_tables.is_some()
     }
 
     fn element_symbols(&self) -> Vec<String> {
@@ -1010,6 +1213,256 @@ impl PyRustFormulaFinder {
             ),
         ))
     }
+
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (
+        precursor_mz,
+        precursor_formula,
+        precursor_ion,
+        peaks,
+        config,
+        reduce_graph,
+        minimal_score=None,
+        time_limit_seconds=None,
+        threads=None,
+        electron_mass=0.000548579909065,
+        solver="highs".to_string()
+    ))]
+    fn find_fragmentation_tree_from_spectrum_python(
+        &self,
+        py: Python<'_>,
+        precursor_mz: f64,
+        precursor_formula: String,
+        precursor_ion: String,
+        peaks: Vec<(f64, f64)>,
+        config: Bound<'_, PyAny>,
+        reduce_graph: bool,
+        minimal_score: Option<f64>,
+        time_limit_seconds: Option<f64>,
+        threads: Option<u32>,
+        electron_mass: f64,
+        solver: String,
+    ) -> PyResult<PyRawSpectrumTreeTuple> {
+        let result = self.find_fragmentation_tree_from_spectrum_result_python(
+            py,
+            precursor_mz,
+            precursor_formula,
+            precursor_ion,
+            peaks,
+            config,
+            reduce_graph,
+            minimal_score,
+            time_limit_seconds,
+            threads,
+            electron_mass,
+            solver,
+        )?;
+        Ok(result.tuple())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (
+        precursor_mz,
+        precursor_formula,
+        precursor_ion,
+        peaks,
+        config,
+        reduce_graph,
+        minimal_score=None,
+        time_limit_seconds=None,
+        threads=None,
+        electron_mass=0.000548579909065,
+        solver="highs".to_string()
+    ))]
+    fn find_fragmentation_tree_from_spectrum_result_python(
+        &self,
+        py: Python<'_>,
+        precursor_mz: f64,
+        precursor_formula: String,
+        precursor_ion: String,
+        peaks: Vec<(f64, f64)>,
+        config: Bound<'_, PyAny>,
+        reduce_graph: bool,
+        minimal_score: Option<f64>,
+        time_limit_seconds: Option<f64>,
+        threads: Option<u32>,
+        electron_mass: f64,
+        solver: String,
+    ) -> PyResult<PyRustFragmentationTreeResult> {
+        let config = extract_sirius_like_config(&config)?;
+        let solver = TreeSolver::from_name(&solver).map_err(PyValueError::new_err)?;
+        let peaks = peaks
+            .into_iter()
+            .map(|(mz, intensity)| SpectrumPeak { mz, intensity })
+            .collect();
+        let options = TreeSolveOptions {
+            minimal_score,
+            time_limit_seconds,
+            threads,
+            solver,
+        };
+        let finder = Arc::clone(&self.inner);
+        let tables = self.sirius_like_tables.clone();
+
+        let result = py
+            .allow_threads(move || {
+                compute_sirius_like_tree_from_spectrum(
+                    &finder,
+                    precursor_mz,
+                    &precursor_formula,
+                    &precursor_ion,
+                    peaks,
+                    config,
+                    tables,
+                    options,
+                    reduce_graph,
+                    electron_mass,
+                )
+            })
+            .map_err(PyValueError::new_err)?;
+
+        Ok(PyRustFragmentationTreeResult::new(result))
+    }
+}
+
+fn extract_sirius_like_config(config: &Bound<'_, PyAny>) -> PyResult<SiriusLikeConfig> {
+    Ok(SiriusLikeConfig {
+        ms2_tolerance_ppm: config.getattr("ms2_tolerance_ppm")?.extract()?,
+        candidate_search_ppm: config.getattr("candidate_search_ppm")?.extract()?,
+        candidate_search_absolute_da: config.getattr("candidate_search_absolute_da")?.extract()?,
+        precursor_tolerance_ppm: config.getattr("precursor_tolerance_ppm")?.extract()?,
+        candidate_limit_per_peak: config.getattr("candidate_limit_per_peak")?.extract()?,
+        max_fragment_peaks: config.getattr("max_fragment_peaks")?.extract()?,
+        min_relative_intensity: config.getattr("min_relative_intensity")?.extract()?,
+        merge_close_peaks: config.getattr("merge_close_peaks")?.extract()?,
+        median_noise_intensity: config.getattr("median_noise_intensity")?.extract()?,
+        tree_size_score: config.getattr("tree_size_score")?.extract()?,
+        fragment_size_max_score: config.getattr("fragment_size_max_score")?.extract()?,
+        fragment_size_max_mz: config.getattr("fragment_size_max_mz")?.extract()?,
+        clipped_noise_xmin: config.getattr("clipped_noise_xmin")?.extract()?,
+        clipped_noise_beta: config.getattr("clipped_noise_beta")?.extract()?,
+        loss_size_mean: config.getattr("loss_size_mean")?.extract()?,
+        loss_size_variance: config.getattr("loss_size_variance")?.extract()?,
+        loss_size_normalization: config.getattr("loss_size_normalization")?.extract()?,
+        intrinsically_charged_root_penalty: config
+            .getattr("intrinsically_charged_root_penalty")?
+            .extract()?,
+        strange_element_root_penalty: config.getattr("strange_element_root_penalty")?.extract()?,
+        strange_element_small_fragment_score: config
+            .getattr("strange_element_small_fragment_score")?
+            .extract()?,
+        strange_element_small_fragment_max_mass: config
+            .getattr("strange_element_small_fragment_max_mass")?
+            .extract()?,
+        strange_element_fragment_score: config
+            .getattr("strange_element_fragment_score")?
+            .extract()?,
+        strange_element_fragment_penalty: config
+            .getattr("strange_element_fragment_penalty")?
+            .extract()?,
+        strange_element_fragment_min_mass: config
+            .getattr("strange_element_fragment_min_mass")?
+            .extract()?,
+        strange_element_loss_score: config.getattr("strange_element_loss_score")?.extract()?,
+        free_radical_penalty: config.getattr("free_radical_penalty")?.extract()?,
+        free_radical_normalization: config.getattr("free_radical_normalization")?.extract()?,
+        strict_sirius_radical_parity: config.getattr("strict_sirius_radical_parity")?.extract()?,
+        dbe_loss_score: config.getattr("dbe_loss_score")?.extract()?,
+        pure_carbon_nitrogen_loss_penalty: config
+            .getattr("pure_carbon_nitrogen_loss_penalty")?
+            .extract()?,
+        mass_deviation_vertex_weight: config.getattr("mass_deviation_vertex_weight")?.extract()?,
+        mass_deviation_edge_weight: config.getattr("mass_deviation_edge_weight")?.extract()?,
+        mass_deviation_absolute_da: config.getattr("mass_deviation_absolute_da")?.extract()?,
+        loss_mass_deviation_absolute_da: config
+            .getattr("loss_mass_deviation_absolute_da")?
+            .extract()?,
+        chemical_prior_root_score: config.getattr("chemical_prior_root_score")?.extract()?,
+        db_paired_formula_score: config.getattr("db_paired_formula_score")?.extract()?,
+        db_paired_formulas: extract_optional_string_set(&config.getattr("db_paired_formulas")?)?,
+        enable_common_fragment_score: config.getattr("enable_common_fragment_score")?.extract()?,
+        carbohydrogen_root_score: config.getattr("carbohydrogen_root_score")?.extract()?,
+        enable_carbohydrogen_fragment_score: config
+            .getattr("enable_carbohydrogen_fragment_score")?
+            .extract()?,
+        carbohydrogen_fragment_min_relative_intensity: config
+            .getattr("carbohydrogen_fragment_min_relative_intensity")?
+            .extract()?,
+        carbohydrogen_fragment_xmin: config.getattr("carbohydrogen_fragment_xmin")?.extract()?,
+        carbohydrogen_fragment_median: config
+            .getattr("carbohydrogen_fragment_median")?
+            .extract()?,
+        multimere_root_loss_score: config.getattr("multimere_root_loss_score")?.extract()?,
+        multimere_loss_score: config.getattr("multimere_loss_score")?.extract()?,
+        fatty_acid_chain_score_weight: config
+            .getattr("fatty_acid_chain_score_weight")?
+            .extract()?,
+        fatty_acid_chain_double_bond_decay: config
+            .getattr("fatty_acid_chain_double_bond_decay")?
+            .extract()?,
+        fatty_acid_chain_min_length: config.getattr("fatty_acid_chain_min_length")?.extract()?,
+        fatty_acid_chain_max_length: config.getattr("fatty_acid_chain_max_length")?.extract()?,
+        fatty_acid_chain_max_double_bonds: config
+            .getattr("fatty_acid_chain_max_double_bonds")?
+            .extract()?,
+        recombine_common_losses: config.getattr("recombine_common_losses")?.extract()?,
+        estimate_tree_size: config.getattr("estimate_tree_size")?.extract()?,
+        tree_size_increase: config.getattr("tree_size_increase")?.extract()?,
+        max_tree_size_increase: config.getattr("max_tree_size_increase")?.extract()?,
+        max_tree_size_score: config.getattr("max_tree_size_score")?.extract()?,
+        min_explained_intensity: config.getattr("min_explained_intensity")?.extract()?,
+        min_explained_peaks: config.getattr("min_explained_peaks")?.extract()?,
+        use_sirius_tree_size_quality_threshold: config
+            .getattr("use_sirius_tree_size_quality_threshold")?
+            .extract()?,
+    })
+}
+
+fn extract_optional_string_set(value: &Bound<'_, PyAny>) -> PyResult<Option<HashSet<String>>> {
+    if value.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(value.extract::<Vec<String>>()?.into_iter().collect()))
+}
+
+fn extract_sirius_like_tables(tables: &Bound<'_, PyDict>) -> PyResult<SiriusLikeTables> {
+    Ok(SiriusLikeTables {
+        common_fragments: extract_string_f64_map(tables, "common_fragments")?,
+        common_losses: extract_string_f64_map(tables, "common_losses")?,
+        recombined_common_losses: extract_string_f64_map(tables, "recombined_common_losses")?,
+        recombined_common_loss_overrides: extract_string_f64_map(
+            tables,
+            "recombined_common_loss_overrides",
+        )?,
+        common_radicals: extract_string_f64_map(tables, "common_radicals")?,
+        common_root_losses: extract_string_f64_map(tables, "common_root_losses")?,
+        strange_fragment_whitelist: extract_string_set(tables, "strange_fragment_whitelist")?,
+        strange_losses: extract_string_set(tables, "strange_losses")?,
+        common_fragment_normalization: extract_f64(tables, "common_fragment_normalization")?,
+        common_loss_normalization: extract_f64(tables, "common_loss_normalization")?,
+        common_root_loss_normalization: extract_f64(tables, "common_root_loss_normalization")?,
+    })
+}
+
+fn extract_string_f64_map(tables: &Bound<'_, PyDict>, key: &str) -> PyResult<HashMap<String, f64>> {
+    let Some(value) = tables.get_item(key)? else {
+        return Err(PyValueError::new_err(format!("missing table key {key:?}")));
+    };
+    Ok(value.extract::<Vec<(String, f64)>>()?.into_iter().collect())
+}
+
+fn extract_string_set(tables: &Bound<'_, PyDict>, key: &str) -> PyResult<HashSet<String>> {
+    let Some(value) = tables.get_item(key)? else {
+        return Err(PyValueError::new_err(format!("missing table key {key:?}")));
+    };
+    Ok(value.extract::<Vec<String>>()?.into_iter().collect())
+}
+
+fn extract_f64(tables: &Bound<'_, PyDict>, key: &str) -> PyResult<f64> {
+    let Some(value) = tables.get_item(key)? else {
+        return Err(PyValueError::new_err(format!("missing table key {key:?}")));
+    };
+    value.extract()
 }
 
 #[pyfunction]
@@ -1089,7 +1542,8 @@ fn py_loss_scores(values: Option<Vec<(String, String, f64)>>) -> BTreeMap<(Strin
     reduce_graph=true,
     minimal_score=None,
     time_limit_seconds=None,
-    threads=None
+    threads=None,
+    solver="highs".to_string()
 ))]
 fn solve_fragmentation_tree_python(
     py: Python<'_>,
@@ -1105,6 +1559,7 @@ fn solve_fragmentation_tree_python(
     minimal_score: Option<f64>,
     time_limit_seconds: Option<f64>,
     threads: Option<u32>,
+    solver: String,
 ) -> PyResult<PyFragmentationTreeTuple> {
     let input = SubFormulaGraphInput {
         root_candidates: py_fragment_candidates(root_candidates),
@@ -1122,6 +1577,7 @@ fn solve_fragmentation_tree_python(
         minimal_score,
         time_limit_seconds,
         threads,
+        solver: TreeSolver::from_name(&solver).map_err(PyValueError::new_err)?,
     };
 
     let result = py
@@ -1174,6 +1630,7 @@ fn solve_fragmentation_tree_python(
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRustFormulaFinder>()?;
     m.add_class::<PyRustQueryResult>()?;
+    m.add_class::<PyRustFragmentationTreeResult>()?;
     m.add_function(wrap_pyfunction!(format_formula, m)?)?;
     m.add_function(wrap_pyfunction!(parse_formula_counts, m)?)?;
     m.add_function(wrap_pyfunction!(parse_element_symbols, m)?)?;

@@ -18,6 +18,7 @@ from .results import (
 from .scoring import (
     SiriusLikeScorer,
     SiriusLikeScoringConfig,
+    SiriusLikeScoringTables,
     protonated_mz,
 )
 from .spectrum import FragmentationSpectrum
@@ -44,6 +45,7 @@ class FragmentationTreeFinder:
         self,
         elements: Iterable[str] | str = "CHNOPS",
         backend: str = "rust",
+        scoring_tables: SiriusLikeScoringTables | None = None,
     ):
         if backend != "rust":
             raise ValueError(
@@ -52,6 +54,8 @@ class FragmentationTreeFinder:
             )
         self.backend = backend
         self.element_symbols = self._normalize_element_symbols(elements)
+        self.scoring_tables = scoring_tables
+        self._rust_formula_finder = None
 
     def find_tree(
         self,
@@ -74,6 +78,7 @@ class FragmentationTreeFinder:
         spectrum: FragmentationSpectrum,
         scoring_config: SiriusLikeScoringConfig | None = None,
         options: FragmentationTreeOptions | None = None,
+        implementation: str = "rust",
     ) -> FragmentationTree:
         """
         Generate candidates and SIRIUS-like scores from a raw MS/MS spectrum.
@@ -90,6 +95,30 @@ class FragmentationTreeFinder:
             )
 
         config = SiriusLikeScoringConfig() if scoring_config is None else scoring_config
+        if implementation == "rust":
+            tree = self._find_tree_from_spectrum_rust(spectrum, config, options)
+            tree.query_params.update(
+                {
+                    "spectrum_name": spectrum.name,
+                    "spectrum_accession": spectrum.accession,
+                    "precursor_mz": spectrum.precursor_mz,
+                    "precursor_formula": spectrum.precursor_formula,
+                    "precursor_ion": spectrum.precursor_ion,
+                    "scoring": "sirius_like_default",
+                    "implementation": "rust",
+                }
+            )
+            return tree
+        if implementation != "python":
+            raise ValueError(
+                f"Unknown raw-spectrum implementation {implementation!r}. "
+                "Expected 'python' or 'rust'."
+            )
+        if self.scoring_tables is not None:
+            raise ValueError(
+                "custom scoring_tables are supported only by the Rust "
+                "raw-spectrum implementation"
+            )
         if config.estimate_tree_size:
             tree = self._find_tree_from_spectrum_with_tree_size_estimation(
                 spectrum,
@@ -106,9 +135,162 @@ class FragmentationTreeFinder:
                 "precursor_formula": spectrum.precursor_formula,
                 "precursor_ion": spectrum.precursor_ion,
                 "scoring": "sirius_like_default",
+                "implementation": "python",
             }
         )
         return tree
+
+    def find_tree_result_from_spectrum(
+        self,
+        spectrum: FragmentationSpectrum,
+        scoring_config: SiriusLikeScoringConfig | None = None,
+        options: FragmentationTreeOptions | None = None,
+    ):
+        """
+        Return the Rust-owned raw-spectrum tree result.
+
+        This is the lowest-overhead public raw-spectrum path: caller data goes
+        into Rust and the selected tree stays in a PyO3 result object. Use
+        ``find_tree_from_spectrum`` when the legacy Python ``FragmentationTree``
+        dataclass is needed.
+        """
+        if spectrum.precursor_formula is None:
+            raise ValueError("raw spectrum tree scoring requires precursor_formula")
+        if spectrum.precursor_ion != "[M+H]+":
+            raise ValueError(
+                "raw spectrum fragmentation trees currently support only [M+H]+"
+            )
+        config = SiriusLikeScoringConfig() if scoring_config is None else scoring_config
+        options = FragmentationTreeOptions() if options is None else options
+        return self._find_tree_result_from_spectrum_rust(spectrum, config, options)
+
+    def _find_tree_from_spectrum_rust(
+        self,
+        spectrum: FragmentationSpectrum,
+        config: SiriusLikeScoringConfig,
+        options: FragmentationTreeOptions | None,
+    ) -> FragmentationTree:
+        options = FragmentationTreeOptions() if options is None else options
+        rust_result = self._find_tree_result_from_spectrum_rust(
+            spectrum,
+            config,
+            options,
+        )
+        (
+            tree_score,
+            is_optimal,
+            solver_status,
+            root_formula,
+            selected_fragments,
+            selected_losses,
+            graph_vertex_count,
+            graph_edge_count,
+            reduced_vertex_count,
+            reduced_edge_count,
+            tree_size_score,
+        ) = rust_result.to_tuple()
+
+        fragments_by_formula = {}
+        fragments = []
+        for (
+            formula,
+            _counts,
+            ionization,
+            peak_id,
+            color,
+            mass,
+            candidate_score,
+            intensity,
+        ) in selected_fragments:
+            fragment = Fragment(
+                formula=formula,
+                counts=self.parse_formula_counts(formula),
+                ionization=ionization,
+                peak_id=peak_id,
+                color=color,
+                mass=mass,
+                candidate_score=candidate_score,
+                intensity=intensity,
+            )
+            fragments.append(fragment)
+            fragments_by_formula[formula] = fragment
+
+        losses = []
+        for source_formula, target_formula, score in selected_losses:
+            source = fragments_by_formula[source_formula]
+            target = fragments_by_formula[target_formula]
+            losses.append(
+                Loss(
+                    source=source,
+                    target=target,
+                    formula=self.format_formula_counts(
+                        self.subtract_counts(source.counts, target.counts)
+                    ),
+                    score=score,
+                )
+            )
+
+        return FragmentationTree(
+            root=fragments_by_formula[root_formula],
+            fragments=fragments,
+            losses=losses,
+            tree_score=tree_score,
+            is_optimal=is_optimal,
+            solver_status=solver_status,
+            graph_vertex_count=graph_vertex_count,
+            graph_edge_count=graph_edge_count,
+            reduced_vertex_count=reduced_vertex_count,
+            reduced_edge_count=reduced_edge_count,
+            query_params={
+                "elements": tuple(self.element_symbols),
+                "backend": self.backend,
+                "allowed_ionizations": (spectrum.precursor_ion,),
+                "reduce_graph": options.reduce_graph,
+                "minimal_score": options.minimal_score,
+                "time_limit_seconds": options.time_limit_seconds,
+                "threads": options.threads,
+                "solver": options.solver,
+                "tree_size_score": tree_size_score,
+            },
+        )
+
+    def _find_tree_result_from_spectrum_rust(
+        self,
+        spectrum: FragmentationSpectrum,
+        config: SiriusLikeScoringConfig,
+        options: FragmentationTreeOptions,
+    ):
+        rust_finder = self._get_rust_formula_finder()
+        rust_config = (
+            config
+            if config.db_paired_formulas is None
+            else replace(
+                config,
+                db_paired_formulas=tuple(sorted(config.db_paired_formulas)),
+            )
+        )
+        return rust_finder.find_fragmentation_tree_result_from_spectrum_raw(
+            precursor_mz=spectrum.precursor_mz,
+            precursor_formula=spectrum.precursor_formula,
+            precursor_ion=spectrum.precursor_ion,
+            peaks=[(peak.mz, peak.intensity) for peak in spectrum.peaks],
+            scoring_config=rust_config,
+            reduce_graph=options.reduce_graph,
+            minimal_score=options.minimal_score,
+            time_limit_seconds=options.time_limit_seconds,
+            threads=options.threads,
+            solver=options.solver,
+        )
+
+    def _get_rust_formula_finder(self):
+        if self._rust_formula_finder is None:
+            from find_mfs.core.rust_backend import RustFormulaFinder
+
+            rust_finder = RustFormulaFinder.from_elements(self.element_symbols)
+            if self.scoring_tables is not None:
+                rust_finder = rust_finder.with_sirius_like_tables(self.scoring_tables)
+            self._rust_formula_finder = rust_finder
+        return self._rust_formula_finder
 
     def _find_tree_from_spectrum_with_tree_size_estimation(
         self,
@@ -324,6 +506,7 @@ class FragmentationTreeFinder:
             minimal_score=options.minimal_score,
             time_limit_seconds=options.time_limit_seconds,
             threads=options.threads,
+            solver=options.solver,
         )
 
         fragments_by_formula = {}
@@ -387,6 +570,7 @@ class FragmentationTreeFinder:
                 "minimal_score": options.minimal_score,
                 "time_limit_seconds": options.time_limit_seconds,
                 "threads": options.threads,
+                "solver": options.solver,
             },
         )
 

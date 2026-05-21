@@ -62,6 +62,7 @@ precursor formula is already known.
 from find_mfs import (
     FragmentationSpectrum,
     FragmentationTreeFinder,
+    SiriusLikeScoringTables,
     SiriusLikeScoringConfig,
     SpectrumPeak,
 )
@@ -86,6 +87,51 @@ tree = FragmentationTreeFinder("CHNO").find_tree_from_spectrum(
     scoring_config=SiriusLikeScoringConfig(),
 )
 ```
+
+The public raw-spectrum call defaults to the end-to-end Rust implementation:
+preprocessing, candidate generation, SIRIUS-like scoring, graph construction,
+and the `good_lp`/HiGHS solve all run in Rust. The previous Python orchestration
+path remains available for parity diagnostics:
+
+```python
+python_tree = FragmentationTreeFinder("CHNO").find_tree_from_spectrum(
+    spectrum,
+    implementation="python",
+)
+```
+
+For the lowest-overhead path, keep the result in Rust:
+
+```python
+rust_result = FragmentationTreeFinder("CHNO").find_tree_result_from_spectrum(spectrum)
+rust_result.formula_strings()
+rust_result.losses()
+```
+
+The built-in scorer uses static tables embedded in Rust, so the default path
+does not rebuild or pass scoring lookup tables for each call. Callers that want
+to adjust the SIRIUS-like lookup tables can opt in with
+`SiriusLikeScoringTables`; those tables are copied into the Rust finder once,
+then reused for every raw-spectrum call through that finder:
+
+```python
+tables = SiriusLikeScoringTables.default()
+formula = "C12H12O2"
+current = tables.common_fragments.get(formula, 0.0)
+tables.common_fragments[formula] = current + 5.0
+
+finder = FragmentationTreeFinder("CHNO", scoring_tables=tables)
+tree = finder.find_tree_from_spectrum(spectrum)
+```
+
+Mutating `tables` after the first call does not change an already cached Rust
+finder. Create a new `FragmentationTreeFinder` when a different table profile is
+intended. This keeps the normal API fast while still exposing a coherent escape
+hatch for caller-owned scoring profiles.
+
+The validation harness `benchmarks/compare_fragmentation_python_rust.py`
+compares these two implementations on stratified MassBank samples and writes
+JSONL/CSV summaries for future regression checks.
 
 This path first applies SIRIUS-style parent-peak handling: MS2 peaks inside
 twice the configured MS2 tolerance around the precursor m/z are treated as the

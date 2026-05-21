@@ -42,6 +42,7 @@ from .fragmentation import (
     FragmentationTreeSearchResults,
     Loss,
     SiriusLikeScoringConfig,
+    SiriusLikeScoringTables,
     SpectrumPeak,
     load_db_paired_formulas,
 )
@@ -172,6 +173,7 @@ __all__ = [
     "FragmentCandidate",
     "ExplicitFragmentationScoring",
     "SiriusLikeScoringConfig",
+    "SiriusLikeScoringTables",
     "load_db_paired_formulas",
     "FragmentationTreeOptions",
     "Fragment",
