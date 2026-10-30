@@ -198,7 +198,6 @@ class MistNetNumpy:
         to_heads = lambda t: t.reshape(L, B * nh, hd).transpose(1, 0, 2)
         q, k, v = to_heads(q), to_heads(k), to_heads(v)
 
-
         q = q / np.sqrt(hd, dtype=self.dtype)
         q4 = q.reshape(B, nh, L, hd)
         q1 = (q4 + p["bias_u"][None, :, None, :]).reshape(B * nh, L, hd)
